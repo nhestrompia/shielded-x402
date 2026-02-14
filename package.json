@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "pretest": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/client build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
@@ -23,7 +24,9 @@
     "deploy:sepolia": "bash ops/deploy-sepolia.sh",
     "deploy:anvil:dummy": "bash ops/deploy-anvil-dummy.sh",
     "deploy:sepolia:dummy-service": "bash ops/deploy-sepolia-dummy-service.sh",
+    "pretest:sepolia-live": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/client build",
     "test:sepolia-live": "pnpm --filter @shielded-x402/merchant-gateway test:sepolia-live",
+    "pretest:anvil-live": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/client build",
     "test:anvil-live": "pnpm --filter @shielded-x402/merchant-gateway test:anvil-live",
     "e2e:anvil": "bash ops/e2e-anvil.sh"
   },

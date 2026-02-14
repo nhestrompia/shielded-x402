@@ -43,8 +43,8 @@ This keeps compatibility with endpoints that may mix rails.
    - `verifyingContract`
 2. Build witness from local note/Merkle state.
 3. Call client SDK:
-   - `buildSpendProof(...)`
-   - `pay402(...)`
+   - easiest: `createShieldedFetch(...)` and call that wrapper instead of raw `fetch`
+   - configure `proofProvider` with `createNoirJsProofProviderFromDefaultCircuit()` for in-process proving
 4. Retry with required headers.
 5. On `200`, treat as settled for API access.
 

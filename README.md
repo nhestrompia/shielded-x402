@@ -33,6 +33,12 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 1. Start gateway: `pnpm --filter @shielded-x402/merchant-gateway dev`
 2. Run client demo: `pnpm --filter @shielded-x402/demo-api demo`
 
+## Agent Plug-and-Play (NoirJS)
+
+- For in-process proof generation in agents, configure client SDK with `proofProvider` via `createNoirJsProofProviderFromDefaultCircuit()`.
+- For a single-call integration, use `createShieldedFetch(...)` and replace direct `fetch` calls.
+- See `shielded-402/docs/sdk.md` for setup snippet.
+
 ## Sepolia deployment
 
 1. Copy env file: `cp .env.example .env`
@@ -58,3 +64,7 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 
 - Agent integration/testing guide: `/shielded-402/docs/agents-guide.md`
 - Full testing playbook (Anvil + Sepolia): `/shielded-402/docs/testing-playbook.md`
+
+## npm distribution
+
+- Publish checklist and commands: `shielded-402/docs/publish-npm.md`

@@ -26,6 +26,17 @@ require_cmd node
 require_cmd pnpm
 require_cmd curl
 
+rpc_ready() {
+  local response
+  response="$(
+    curl -sS \
+      -H 'Content-Type: application/json' \
+      --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+      "$ANVIL_RPC_URL" 2>/dev/null || true
+  )"
+  [[ "$response" == *'"result":"0x'* ]]
+}
+
 if [[ "$E2E_PAYMENT_RESPONSE_FILE" == /ops/* ]]; then
   E2E_PAYMENT_RESPONSE_FILE="$(pwd)${E2E_PAYMENT_RESPONSE_FILE}"
 elif [[ "$E2E_PAYMENT_RESPONSE_FILE" != /* ]]; then
@@ -49,12 +60,12 @@ anvil --chain-id 31337 --host 127.0.0.1 --port "$ANVIL_PORT" --silent >"$ANVIL_L
 ANVIL_PID=$!
 
 for _ in {1..30}; do
-  if cast block-number --rpc-url "$ANVIL_RPC_URL" >/dev/null 2>&1; then
+  if rpc_ready; then
     break
   fi
   sleep 0.5
 done
-if ! cast block-number --rpc-url "$ANVIL_RPC_URL" >/dev/null 2>&1; then
+if ! rpc_ready; then
   echo "Anvil did not become ready; log at $ANVIL_LOG"
   exit 1
 fi

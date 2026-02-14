@@ -78,6 +78,41 @@ export class ShieldedClientSDK {
     };
   }
 
+  async buildSpendProofWithProvider(params: SpendBuildParams): Promise<SpendProofBundle> {
+    const bundle = this.buildSpendProof(params);
+    return this.attachRealProof(bundle, params);
+  }
+
+  private async attachRealProof(bundle: SpendProofBundle, params: SpendBuildParams): Promise<SpendProofBundle> {
+    if (!this.config.proofProvider) {
+      return bundle;
+    }
+
+    const proofResult = await this.config.proofProvider.generateProof({
+      note: params.note,
+      witness: params.witness,
+      nullifierSecret: params.nullifierSecret,
+      merchantPubKey: params.merchantPubKey,
+      merchantRho: bundle.merchantRho,
+      changePkHash: params.note.pkHash,
+      changeRho: bundle.changeNote.rho,
+      amount: params.amount,
+      challengeNonce: params.challengeNonce,
+      merchantAddress: params.merchantAddress,
+      expectedPublicInputs: bundle.response.publicInputs
+    });
+
+    const publicInputs = proofResult.publicInputs ?? bundle.response.publicInputs;
+    return {
+      ...bundle,
+      response: {
+        ...bundle.response,
+        proof: proofResult.proof,
+        publicInputs
+      }
+    };
+  }
+
   async pay402(paymentResponse: ShieldedPaymentResponse): Promise<{ payload: string; signature: string }> {
     const payload = JSON.stringify(paymentResponse);
     const signature = await this.config.signer(payload);
@@ -90,36 +125,54 @@ export class ShieldedClientSDK {
     return { requirement: JSON.parse(header) as PaymentRequirement };
   }
 
+  async complete402Payment(
+    input: string,
+    init: RequestInit,
+    requirement: PaymentRequirement,
+    note: ShieldedNote,
+    witness: MerkleWitness,
+    payerPkHash: Hex,
+    fetchFn: typeof fetch = fetch
+  ): Promise<Response> {
+    if (requirement.rail !== 'shielded-usdc') {
+      throw new Error(`unsupported rail: ${requirement.rail}`);
+    }
+
+    const nonce = requirement.challengeNonce as Hex;
+    const merchant = requirement.verifyingContract;
+    const amount = BigInt(requirement.amount);
+
+    const spendParams: SpendBuildParams = {
+      note,
+      witness,
+      nullifierSecret: payerPkHash,
+      merchantPubKey: requirement.merchantPubKey,
+      merchantAddress: merchant,
+      amount,
+      challengeNonce: nonce,
+      encryptedReceipt: '0x'
+    };
+
+    const bundleWithProof = await this.buildSpendProofWithProvider(spendParams);
+
+    const signed = await this.pay402(bundleWithProof.response);
+    const headers = new Headers(init.headers);
+    headers.set(X402_HEADERS.paymentResponse, signed.payload);
+    headers.set(X402_HEADERS.paymentSignature, signed.signature);
+    headers.set(X402_HEADERS.challengeNonce, requirement.challengeNonce);
+
+    return fetchFn(input, {
+      ...init,
+      headers
+    });
+  }
+
   async fetchWithShieldedPayment(input: string, init: RequestInit, note: ShieldedNote, witness: MerkleWitness, payerPkHash: Hex): Promise<Response> {
     const first = await fetch(input, init);
     if (first.status !== 402) return first;
 
     const parsed = this.parse402Response(first);
-    const nonce = parsed.requirement.challengeNonce as Hex;
-    const merchant = parsed.requirement.verifyingContract;
-    const amount = BigInt(parsed.requirement.amount);
-
-    const bundle = this.buildSpendProof({
-      note,
-      witness,
-      nullifierSecret: payerPkHash,
-      merchantPubKey: parsed.requirement.merchantPubKey,
-      merchantAddress: merchant,
-      amount,
-      challengeNonce: nonce,
-      encryptedReceipt: '0x'
-    });
-
-    const signed = await this.pay402(bundle.response);
-    const headers = new Headers(init.headers);
-    headers.set(X402_HEADERS.paymentResponse, signed.payload);
-    headers.set(X402_HEADERS.paymentSignature, signed.signature);
-    headers.set(X402_HEADERS.challengeNonce, parsed.requirement.challengeNonce);
-
-    return fetch(input, {
-      ...init,
-      headers
-    });
+    return this.complete402Payment(input, init, parsed.requirement, note, witness, payerPkHash);
   }
 }
 
