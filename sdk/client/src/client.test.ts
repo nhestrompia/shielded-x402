@@ -11,6 +11,9 @@ afterEach(() => {
 });
 
 describe('ShieldedClientSDK', () => {
+  const BN254_FIELD_MODULUS =
+    21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
   it('builds a spend payload with expected fields', () => {
     const sdk = new ShieldedClientSDK({
       endpoint: 'http://localhost:3000',
@@ -175,5 +178,44 @@ describe('ShieldedClientSDK', () => {
 
     expect(bundle.response.proof).toBe('0x55');
     expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-generated spend rhos are BN254 field-safe', () => {
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://localhost:3000',
+      signer: async () => '0xsig'
+    });
+    const note = {
+      amount: 100n,
+      rho: '0x0000000000000000000000000000000000000000000000000000000000000011',
+      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009',
+      commitment: deriveCommitment(
+        100n,
+        '0x0000000000000000000000000000000000000000000000000000000000000011',
+        '0x0000000000000000000000000000000000000000000000000000000000000009'
+      ),
+      leafIndex: 0
+    } as const;
+    const witness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+      path: new Array<string>(32).fill(
+        '0x0000000000000000000000000000000000000000000000000000000000000000'
+      ) as Hex[],
+      indexBits: new Array<number>(32).fill(0)
+    };
+    const bundle = sdk.buildSpendProof({
+      note,
+      witness,
+      nullifierSecret: note.pkHash,
+      merchantPubKey:
+        '0x0000000000000000000000000000000000000000000000000000000000000012',
+      merchantAddress: '0x0000000000000000000000000000000000000002',
+      amount: 40n,
+      challengeNonce:
+        '0x9999999999999999999999999999999999999999999999999999999999999999',
+      encryptedReceipt: '0x'
+    });
+    expect(BigInt(bundle.merchantRho)).toBeLessThan(BN254_FIELD_MODULUS);
+    expect(BigInt(bundle.changeNote.rho)).toBeLessThan(BN254_FIELD_MODULUS);
   });
 });

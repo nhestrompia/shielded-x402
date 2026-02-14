@@ -39,6 +39,50 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 - For a single-call integration, use `createShieldedFetch(...)` and replace direct `fetch` calls.
 - See `shielded-402/docs/sdk.md` for setup snippet.
 
+## High-Level Flow
+
+```text
++---------------------+
+|      Agent App      |
+|  uses shieldedFetch |
++---------------------+
+           |
+           v
++---------------------+        402 challenge        +----------------------+
+|   Merchant Gateway  | <-------------------------- | Initial API request  |
+|   x402 middleware   | --------------------------> | from agent           |
++---------------------+                             +----------------------+
+           |
+           v
++-------------------------------------------------------------+
+| Agent-side SDK (local)                                      |
+| - buildSpendProofWithProvider()                             |
+| - NoirJS + bb.js generates ZK proof                         |
+| - signs PAYMENT-RESPONSE                                    |
++-------------------------------------------------------------+
+           |
+           v
++------------------------------+
+| Retry API call with headers  |
+| PAYMENT-RESPONSE             |
+| PAYMENT-SIGNATURE            |
++------------------------------+
+           |
+           v
++--------------------------------------------------+
+| Merchant verification                            |
+| - verify proof                                   |
+| - check root/nullifier onchain                   |
+| - call ShieldedPool.submitSpend(...)             |
++--------------------------------------------------+
+           |
+           v
++----------------------+
+| 200 OK to agent      |
+| paid resource access |
++----------------------+
+```
+
 ## Sepolia deployment
 
 1. Copy env file: `cp .env.example .env`

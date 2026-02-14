@@ -1,6 +1,5 @@
 import { pad, type Hex } from 'viem';
 import type { ProofProvider, ProofProviderRequest, ProofProviderResult } from './types.js';
-import bundledSpendChangeCircuit from './circuits/spend_change.json';
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -153,6 +152,35 @@ export interface NoirCircuitArtifact {
   [key: string]: unknown;
 }
 
+const isNoirCircuitArtifact = (value: unknown): value is NoirCircuitArtifact => {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { bytecode?: unknown }).bytecode === 'string'
+  );
+};
+
+const loadBundledSpendChangeCircuit = async (): Promise<NoirCircuitArtifact> => {
+  const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
+
+  // Node-safe path: avoid JSON module import-attribute issues by reading raw file.
+  try {
+    const fs = await dynamicImport('node:fs/promises');
+    const raw = await fs.readFile(new URL('./circuits/spend_change.json', import.meta.url), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (isNoirCircuitArtifact(parsed)) return parsed;
+  } catch {
+    // Fall through to runtime module import fallback.
+  }
+
+  const module = await dynamicImport('./circuits/spend_change.json');
+  const candidate = module.default ?? module;
+  if (!isNoirCircuitArtifact(candidate)) {
+    throw new Error('bundled spend_change circuit artifact is invalid');
+  }
+  return candidate;
+};
+
 export function createNoirJsProofProvider(config: NoirJsProofProviderConfig): ProofProvider {
   return {
     async generateProof(request: ProofProviderRequest): Promise<ProofProviderResult> {
@@ -213,8 +241,6 @@ export async function createNoirJsProofProviderFromCircuit(
 export async function createNoirJsProofProviderFromDefaultCircuit(
   config?: Omit<NoirJsProofProviderConfig, 'noir' | 'backend'>
 ): Promise<ProofProvider> {
-  return createNoirJsProofProviderFromCircuit(
-    bundledSpendChangeCircuit as unknown as NoirCircuitArtifact,
-    config
-  );
+  const circuit = await loadBundledSpendChangeCircuit();
+  return createNoirJsProofProviderFromCircuit(circuit, config);
 }

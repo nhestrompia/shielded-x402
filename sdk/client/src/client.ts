@@ -4,15 +4,23 @@ import { deriveChallengeHash, deriveCommitment, deriveNullifier } from './crypto
 import { deriveWitness, type MerkleWitness } from './merkle.js';
 import type { Parsed402, ShieldedClientConfig, SpendBuildParams, SpendProofBundle } from './types.js';
 
-function randomHex32(): Hex {
-  return (`0x${randomBytes(32).toString('hex')}`) as Hex;
+const BN254_FIELD_MODULUS =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+function randomFieldHex(): Hex {
+  while (true) {
+    const candidate = BigInt(`0x${randomBytes(32).toString('hex')}`);
+    if (candidate < BN254_FIELD_MODULUS) {
+      return (`0x${candidate.toString(16).padStart(64, '0')}`) as Hex;
+    }
+  }
 }
 
 export class ShieldedClientSDK {
   constructor(private readonly config: ShieldedClientConfig) {}
 
   async deposit(amount: bigint, ownerPkHash: Hex): Promise<{ note: ShieldedNote; txHash?: Hex; leafIndex: number }> {
-    const rho = randomHex32();
+    const rho = randomFieldHex();
     const commitment = deriveCommitment(amount, rho, ownerPkHash);
     const tx = this.config.depositFn ? await this.config.depositFn(amount, commitment) : undefined;
 
@@ -38,10 +46,10 @@ export class ShieldedClientSDK {
     }
 
     const nullifier = deriveNullifier(params.nullifierSecret, params.note.commitment);
-    const merchantRho = params.merchantRho ?? randomHex32();
+    const merchantRho = params.merchantRho ?? randomFieldHex();
     const merchantCommitment = deriveCommitment(params.amount, merchantRho, params.merchantPubKey);
     const changeAmount = params.note.amount - params.amount;
-    const changeRho = params.changeRho ?? randomHex32();
+    const changeRho = params.changeRho ?? randomFieldHex();
     const changeCommitment = deriveCommitment(changeAmount, changeRho, params.note.pkHash);
     const challengeHash = deriveChallengeHash(params.challengeNonce, params.amount, params.merchantAddress);
     const amountHex = (`0x${params.amount.toString(16).padStart(64, '0')}` as Hex);
