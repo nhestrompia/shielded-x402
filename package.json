@@ -1,0 +1,37 @@
+{
+  "name": "shielded-x402",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shielded x402 MVP monorepo",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "doctor": "bash scripts/doctor.sh",
+    "contracts:deps": "bash scripts/setup-foundry-deps.sh",
+    "contracts:test": "FOUNDRY_OFFLINE=true forge test --root contracts",
+    "contracts:fmt": "forge fmt --root contracts",
+    "circuit:check": "bash scripts/circuit-check.sh",
+    "circuit:verifier": "bash scripts/generate-noir-verifier.sh",
+    "circuit:fixture": "bash scripts/generate-proof-fixture.sh",
+    "deploy:sepolia": "bash ops/deploy-sepolia.sh",
+    "deploy:anvil:dummy": "bash ops/deploy-anvil-dummy.sh",
+    "deploy:sepolia:dummy-service": "bash ops/deploy-sepolia-dummy-service.sh",
+    "test:sepolia-live": "pnpm --filter @shielded-x402/merchant-gateway test:sepolia-live",
+    "test:anvil-live": "pnpm --filter @shielded-x402/merchant-gateway test:anvil-live",
+    "e2e:anvil": "bash ops/e2e-anvil.sh"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules
+pnpm-lock.yaml
+dist
+coverage
+out
+cache
+contracts/out
+contracts/cache
+contracts/lib
+.env
+.env.*
+!.env.example
+.ci-artifacts

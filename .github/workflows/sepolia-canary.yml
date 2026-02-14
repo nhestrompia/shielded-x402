@@ -1,0 +1,77 @@
+name: Sepolia Canary
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    env:
+      SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+      DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+      USDC_ADDRESS: ${{ secrets.USDC_ADDRESS }}
+      SHIELDED_POOL_ADDRESS: ${{ secrets.SHIELDED_POOL_ADDRESS }}
+      ULTRA_VERIFIER_ADDRESS: ${{ secrets.ULTRA_VERIFIER_ADDRESS }}
+      MERCHANT_WITHDRAW_PRIVATE_KEY: ${{ secrets.MERCHANT_WITHDRAW_PRIVATE_KEY }}
+      E2E_PAYER_PRIVATE_KEY: ${{ secrets.E2E_PAYER_PRIVATE_KEY }}
+      E2E_PAYMENT_RESPONSE_JSON: ${{ secrets.E2E_PAYMENT_RESPONSE_JSON }}
+      FIXED_CHALLENGE_NONCE: ${{ secrets.FIXED_CHALLENGE_NONCE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Install Noir toolchain
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          echo "$HOME/.nargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup -v 1.0.0-beta.13
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+      - name: Install Foundry deps
+        run: pnpm contracts:deps
+      - name: Doctor
+        run: pnpm doctor
+      - name: Forge smoke test
+        run: FOUNDRY_OFFLINE=true forge test --root contracts
+      - name: Deploy smoke (optional)
+        run: |
+          if [[ -n "$SEPOLIA_RPC_URL" && -n "$DEPLOYER_PRIVATE_KEY" && -n "$USDC_ADDRESS" ]]; then
+            pnpm circuit:verifier
+            bash ops/deploy-sepolia.sh
+          else
+            echo "Missing secrets; skipping deploy smoke"
+          fi
+      - name: Live Gateway E2E (optional)
+        run: |
+          if [[ -n "$SEPOLIA_RPC_URL" && -n "$SHIELDED_POOL_ADDRESS" && -n "$ULTRA_VERIFIER_ADDRESS" && -n "$E2E_PAYER_PRIVATE_KEY" && -n "$E2E_PAYMENT_RESPONSE_JSON" ]]; then
+            printf "%s" "$E2E_PAYMENT_RESPONSE_JSON" > ops/fixtures/sepolia-payment-response.json
+            export ENABLE_ERC8004=false
+            export PRICE_USDC_MICROS=1000000
+            export CHALLENGE_TTL_MS=60000
+            export SHIELDED_POOL_ADDRESS
+            export ULTRA_VERIFIER_ADDRESS
+            export SEPOLIA_RPC_URL
+            export MERCHANT_WITHDRAW_PRIVATE_KEY
+            export FIXED_CHALLENGE_NONCE
+            pnpm --filter @shielded-x402/merchant-gateway dev &
+            GATEWAY_PID=$!
+            trap "kill $GATEWAY_PID" EXIT
+            sleep 5
+            export E2E_GATEWAY_URL="http://127.0.0.1:3000"
+            pnpm test:sepolia-live
+            kill $GATEWAY_PID
+            trap - EXIT
+          else
+            echo "Missing secrets; skipping live gateway e2e"
+          fi

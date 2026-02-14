@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "types": ["node"],
+    "paths": {
+      "@shielded-x402/shared-types": ["packages/shared-types/src/index.ts"],
+      "@shielded-x402/erc8004-adapter": ["packages/erc8004-adapter/src/index.ts"],
+      "@shielded-x402/client": ["sdk/client/src/index.ts"],
+      "@shielded-x402/merchant": ["sdk/merchant/src/index.ts"]
+    }
+  }
+}

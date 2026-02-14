@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Install Noir toolchain
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          echo "$HOME/.nargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup -v 1.0.0-beta.13
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+      - name: Install Foundry deps
+        run: pnpm contracts:deps
+      - name: Doctor
+        run: pnpm doctor
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Contracts Test
+        run: FOUNDRY_OFFLINE=true forge test --root contracts
+      - name: Build
+        run: pnpm build
