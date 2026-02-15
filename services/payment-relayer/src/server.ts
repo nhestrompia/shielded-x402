@@ -36,7 +36,9 @@ app.use(express.json({ limit: '512kb' }));
 
 const rpcUrl = process.env.RELAYER_RPC_URL ?? process.env.SEPOLIA_RPC_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined;
-const ultraVerifierAddress = process.env.ULTRA_VERIFIER_ADDRESS as `0x${string}` | undefined;
+const verifyingContractAddress = (process.env.RELAYER_VERIFYING_CONTRACT ??
+  process.env.PAYMENT_VERIFYING_CONTRACT ??
+  process.env.ULTRA_VERIFIER_ADDRESS) as `0x${string}` | undefined;
 const relayerPrivateKey =
   (process.env.RELAYER_PRIVATE_KEY as `0x${string}` | undefined) ??
   (process.env.PAYMENT_RELAYER_PRIVATE_KEY as `0x${string}` | undefined);
@@ -66,11 +68,11 @@ const challengeBridge = createShieldedChallengeBridge({
 });
 
 const verifier =
-  rpcUrl && shieldedPoolAddress && ultraVerifierAddress
+  rpcUrl && shieldedPoolAddress && verifyingContractAddress
     ? createOnchainVerifier({
         rpcUrl,
         shieldedPoolAddress,
-        ultraVerifierAddress
+        ultraVerifierAddress: verifyingContractAddress
       })
     : createAllowAllVerifier();
 
@@ -115,7 +117,8 @@ const processor = createPaymentRelayerProcessor({
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && ultraVerifierAddress),
+    onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && verifyingContractAddress),
+    verifierContractAddress: verifyingContractAddress ?? null,
     onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && relayerPrivateKey),
     payoutMode,
     x402PayoutEnabled: payoutMode === 'x402',

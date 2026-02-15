@@ -58,7 +58,8 @@ export interface WalletSyncResult {
 
 export interface FileBackedWalletStateConfig {
   filePath: string;
-  rpcUrl: string;
+  rpcUrl?: string;
+  indexerGraphqlUrl?: string;
   shieldedPoolAddress: Hex;
   startBlock?: bigint;
   confirmations?: bigint;
@@ -117,16 +118,19 @@ function deserialize(payload: PersistedWalletState): InMemoryWalletState {
 
 export class FileBackedWalletState {
   private readonly filePath: string;
-  private readonly rpcUrl: string;
+  private readonly rpcUrl: string | undefined;
+  private readonly indexerGraphqlUrl: string | undefined;
   private readonly shieldedPoolAddress: Hex;
   private readonly confirmations: bigint;
   private readonly chunkSize: bigint;
   private readonly startBlock: bigint;
+  private indexerFieldNames?: { deposits: string; spends: string };
   private state: InMemoryWalletState;
 
   private constructor(config: FileBackedWalletStateConfig) {
     this.filePath = config.filePath;
     this.rpcUrl = config.rpcUrl;
+    this.indexerGraphqlUrl = config.indexerGraphqlUrl;
     this.shieldedPoolAddress = config.shieldedPoolAddress;
     this.confirmations = config.confirmations ?? 2n;
     this.chunkSize = config.chunkSize ?? 2_000n;
@@ -217,8 +221,6 @@ export class FileBackedWalletState {
     if (params.merchantLeafIndex !== undefined && params.changeLeafIndex !== undefined) {
       this.state.commitments[params.merchantLeafIndex] = params.merchantCommitment;
       this.state.commitments[params.changeLeafIndex] = params.changeCommitment;
-    } else {
-      this.state.commitments.push(params.merchantCommitment, params.changeCommitment);
     }
     await this.persist();
   }
@@ -250,6 +252,14 @@ export class FileBackedWalletState {
   }
 
   async sync(): Promise<WalletSyncResult> {
+    if (this.indexerGraphqlUrl) {
+      return this.syncFromIndexer();
+    }
+
+    if (!this.rpcUrl) {
+      throw new Error('wallet state sync requires either rpcUrl or indexerGraphqlUrl');
+    }
+
     const client = createPublicClient({
       transport: http(this.rpcUrl)
     });
@@ -370,6 +380,231 @@ export class FileBackedWalletState {
     };
   }
 
+  private async syncFromIndexer(): Promise<WalletSyncResult> {
+    const fromBlock = this.state.lastSyncedBlock + 1n;
+    const { deposits, spends, maxBlockNumber } = await this.fetchIndexerEvents();
+
+    const writes: CommitmentWrite[] = [];
+    let depositsApplied = 0;
+    let spendsApplied = 0;
+
+    for (const deposit of deposits) {
+      const { blockNumber, logIndex } = parseEventPositionFromId(deposit.id);
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 0,
+        leafIndex: Number(deposit.leafIndex),
+        commitment: deposit.commitment
+      });
+      depositsApplied += 1;
+    }
+
+    for (const spend of spends) {
+      const { blockNumber, logIndex } = parseEventPositionFromId(spend.id);
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 0,
+        leafIndex: Number(spend.merchantLeafIndex),
+        commitment: spend.merchantCommitment
+      });
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 1,
+        leafIndex: Number(spend.changeLeafIndex),
+        commitment: spend.changeCommitment
+      });
+      spendsApplied += 1;
+    }
+
+    writes.sort((a, b) => {
+      if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+      if (a.logIndex !== b.logIndex) return a.logIndex < b.logIndex ? -1 : 1;
+      return a.order - b.order;
+    });
+
+    for (const write of writes) {
+      if (write.leafIndex < 0) continue;
+      this.state.commitments[write.leafIndex] = write.commitment;
+      const normalized = normalizeHex(write.commitment);
+      for (let i = 0; i < this.state.notes.length; i += 1) {
+        const note = this.state.notes[i];
+        if (!note) continue;
+        if (normalizeHex(note.commitment) !== normalized) continue;
+        note.leafIndex = write.leafIndex;
+        if (note.depositBlock === undefined) {
+          note.depositBlock = write.blockNumber;
+        }
+      }
+    }
+
+    const targetBlock = maxBlockNumber >= this.state.lastSyncedBlock ? maxBlockNumber : this.state.lastSyncedBlock;
+    this.state.lastSyncedBlock = targetBlock;
+    await this.persist();
+
+    return {
+      fromBlock,
+      toBlock: targetBlock,
+      depositsApplied,
+      spendsApplied
+    };
+  }
+
+  private async fetchIndexerEvents(): Promise<{
+    deposits: Array<{ id: string; commitment: Hex; leafIndex: string }>;
+    spends: Array<{
+      id: string;
+      merchantCommitment: Hex;
+      changeCommitment: Hex;
+      merchantLeafIndex: string;
+      changeLeafIndex: string;
+    }>;
+    maxBlockNumber: bigint;
+  }> {
+    if (!this.indexerGraphqlUrl) {
+      throw new Error('indexerGraphqlUrl is not configured');
+    }
+    const endpoint = this.indexerGraphqlUrl;
+    const post = async <T>(query: string, variables?: Record<string, unknown>): Promise<T> => {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          query,
+          ...(variables ? { variables } : {})
+        })
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`indexer graphql request failed: ${response.status} ${text}`);
+      }
+      const payload = (await response.json()) as { data?: T; errors?: Array<{ message?: string }> };
+      if (payload.errors && payload.errors.length > 0) {
+        const message = payload.errors.map((error) => error.message ?? 'unknown error').join('; ');
+        throw new Error(`indexer graphql error: ${message}`);
+      }
+      if (!payload.data) {
+        throw new Error('indexer graphql response missing data');
+      }
+      return payload.data;
+    };
+
+    if (!this.indexerFieldNames) {
+      const introspection = await post<{
+        __schema: { queryType: { fields: Array<{ name: string }> } };
+      }>(`query WalletIndexerFields { __schema { queryType { fields { name } } } }`);
+
+      const fieldNames = introspection.__schema.queryType.fields.map((field) => field.name);
+      const pickField = (needle: string): string | undefined =>
+        fieldNames.find(
+          (name) =>
+            name.toLowerCase().includes(needle) &&
+            !name.toLowerCase().includes('aggregate') &&
+            !name.toLowerCase().includes('by_pk')
+        );
+
+      const deposits = pickField('shieldedpool_deposited');
+      const spends = pickField('shieldedpool_spent');
+
+      if (!deposits || !spends) {
+        throw new Error(
+          `unable to detect Envio fields for deposits/spends at ${endpoint}; available fields: ${fieldNames.join(', ')}`
+        );
+      }
+
+      this.indexerFieldNames = { deposits, spends };
+    }
+
+    const depositsField = this.indexerFieldNames.deposits;
+    const spendsField = this.indexerFieldNames.spends;
+
+    type DepositsQuery = {
+      deposits: Array<{ id: string; commitment: Hex; leafIndex: string }>;
+      spends: Array<{
+        id: string;
+        merchantCommitment: Hex;
+        changeCommitment: Hex;
+        merchantLeafIndex: string;
+        changeLeafIndex: string;
+      }>;
+    };
+
+    const withPaginationQuery = `
+      query WalletIndexerData($limit: Int!, $offset: Int!) {
+        deposits: ${depositsField}(limit: $limit, offset: $offset) {
+          id
+          commitment
+          leafIndex
+        }
+        spends: ${spendsField}(limit: $limit, offset: $offset) {
+          id
+          merchantCommitment
+          changeCommitment
+          merchantLeafIndex
+          changeLeafIndex
+        }
+      }
+    `;
+
+    const fullQuery = `
+      query WalletIndexerDataAll {
+        deposits: ${depositsField} {
+          id
+          commitment
+          leafIndex
+        }
+        spends: ${spendsField} {
+          id
+          merchantCommitment
+          changeCommitment
+          merchantLeafIndex
+          changeLeafIndex
+        }
+      }
+    `;
+
+    let deposits: DepositsQuery['deposits'] = [];
+    let spends: DepositsQuery['spends'] = [];
+
+    try {
+      const pageSize = 500;
+      let offset = 0;
+      while (true) {
+        const page = await post<DepositsQuery>(withPaginationQuery, { limit: pageSize, offset });
+        deposits = deposits.concat(page.deposits);
+        spends = spends.concat(page.spends);
+        if (page.deposits.length < pageSize && page.spends.length < pageSize) {
+          break;
+        }
+        offset += pageSize;
+      }
+    } catch {
+      const data = await post<DepositsQuery>(fullQuery);
+      deposits = data.deposits;
+      spends = data.spends;
+    }
+
+    let maxBlockNumber = this.state.lastSyncedBlock;
+    for (const deposit of deposits) {
+      const position = parseEventPositionFromId(deposit.id);
+      if (position.blockNumber > maxBlockNumber) {
+        maxBlockNumber = position.blockNumber;
+      }
+    }
+    for (const spend of spends) {
+      const position = parseEventPositionFromId(spend.id);
+      if (position.blockNumber > maxBlockNumber) {
+        maxBlockNumber = position.blockNumber;
+      }
+    }
+
+    return { deposits, spends, maxBlockNumber };
+  }
+
   getSpendContextByCommitment(commitment: Hex, payerPkHash: Hex): ShieldedSpendContext {
     const normalized = normalizeHex(commitment);
     const note = this.state.notes.find((candidate) => normalizeHex(candidate.commitment) === normalized);
@@ -407,5 +642,19 @@ export class FileBackedWalletState {
       if (normalizeHex(candidate) === normalized) return i;
     }
     return -1;
+  }
+}
+
+function parseEventPositionFromId(id: string): { blockNumber: bigint; logIndex: number } {
+  const segments = id.split('_');
+  if (segments.length < 3) {
+    return { blockNumber: 0n, logIndex: 0 };
+  }
+  const maybeBlock = segments[segments.length - 2] ?? '0';
+  const maybeLogIndex = segments[segments.length - 1] ?? '0';
+  try {
+    return { blockNumber: BigInt(maybeBlock), logIndex: Number(maybeLogIndex) };
+  } catch {
+    return { blockNumber: 0n, logIndex: 0 };
   }
 }

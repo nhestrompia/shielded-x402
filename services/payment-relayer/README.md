@@ -19,7 +19,7 @@ pnpm relayer:dev
 - `RELAYER_PORT` (default `3100`)
 - `RELAYER_RPC_URL` (or `SEPOLIA_RPC_URL`)
 - `SHIELDED_POOL_ADDRESS`
-- `ULTRA_VERIFIER_ADDRESS`
+- `RELAYER_VERIFYING_CONTRACT` (preferred) or `PAYMENT_VERIFYING_CONTRACT` or `ULTRA_VERIFIER_ADDRESS`
 - `RELAYER_PRIVATE_KEY` (or `PAYMENT_RELAYER_PRIVATE_KEY`)
 - `RELAYER_STORE_PATH` (default `/tmp/shielded-x402-relayer-store.json`)
 - `RELAYER_PAYOUT_MODE=forward|noop|x402`
@@ -32,6 +32,9 @@ pnpm relayer:dev
 - `RELAYER_X402_CHAIN=base-sepolia|sepolia` (default `base-sepolia`)
 
 `x402` payout mode uses `x402-fetch` internally so relayer can pay upstream standard x402 endpoints after shielded settlement.
+
+Verifier address note:
+- For this relayer verification path, point the verifier env var to the `NoirVerifierAdapter` contract (the compact public-input verifier interface), not the raw generated Ultra/Honk verifier unless you also provide expanded 161 public inputs.
 
 ## Endpoints
 

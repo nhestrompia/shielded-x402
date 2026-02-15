@@ -23,6 +23,7 @@ const parseEnvBoolean = (key, fallback) => {
 const relayerEndpoint = process.env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
 const payaiUrl = process.env.PAYAI_URL ?? 'https://x402.payai.network/api/base-sepolia/paid-content';
 const poolRpcUrl = process.env.POOL_RPC_URL ?? process.env.SEPOLIA_RPC_URL;
+const walletIndexerUrl = process.env.WALLET_INDEXER_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS;
 const walletStatePath = process.env.WALLET_STATE_PATH ?? './wallet-state.json';
 const poolStartBlock = parseEnvBigInt('POOL_FROM_BLOCK', 0n);
@@ -37,8 +38,8 @@ const payerPkHash = toWord(parseEnvBigInt('PAYER_PK_HASH', 9n));
 if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
   throw new Error('Set PAYER_PRIVATE_KEY in .env');
 }
-if (!poolRpcUrl) {
-  throw new Error('Set POOL_RPC_URL (or SEPOLIA_RPC_URL) in .env');
+if (!poolRpcUrl && !walletIndexerUrl) {
+  throw new Error('Set WALLET_INDEXER_URL or POOL_RPC_URL (or SEPOLIA_RPC_URL) in .env');
 }
 if (!shieldedPoolAddress || !shieldedPoolAddress.startsWith('0x')) {
   throw new Error('Set SHIELDED_POOL_ADDRESS in .env');
@@ -61,7 +62,8 @@ const note = {
 
 const walletState = await FileBackedWalletState.create({
   filePath: walletStatePath,
-  rpcUrl: poolRpcUrl,
+  ...(poolRpcUrl ? { rpcUrl: poolRpcUrl } : {}),
+  ...(walletIndexerUrl ? { indexerGraphqlUrl: walletIndexerUrl } : {}),
   shieldedPoolAddress,
   startBlock: poolStartBlock,
   confirmations: 2n,
@@ -83,12 +85,31 @@ const resolveWalletContext = async (forceSync) => {
   return walletState.getSpendContextByCommitment(note.commitment, payerPkHash);
 };
 
-resolvedContext = await resolveWalletContext(walletSyncOnStart);
+try {
+  resolvedContext = await resolveWalletContext(walletSyncOnStart);
+} catch (error) {
+  const snapshot = walletState.snapshot();
+  const knownLeaf = snapshot.commitments.findIndex(
+    (commitment) => commitment?.toLowerCase() === note.commitment.toLowerCase()
+  );
+  const hint = [
+    'Unable to resolve witness for NOTE_* values.',
+    `configuredCommitment=${note.commitment}`,
+    `knownLeafIndexInState=${knownLeaf}`,
+    `stateCommitmentCount=${snapshot.commitments.length}`,
+    `stateLastSyncedBlock=${snapshot.lastSyncedBlock.toString()}`,
+    'Ensure the exact NOTE_AMOUNT/NOTE_RHO/NOTE_PK_HASH commitment is deposited to SHIELDED_POOL_ADDRESS on the same chain as WALLET_INDEXER_URL.'
+  ].join(' | ');
+  throw new Error(`${hint} | cause=${error instanceof Error ? error.message : String(error)}`);
+}
 
 const shieldedFetch = createShieldedFetch({
   sdk,
   relayerEndpoint,
   onRelayerSettlement: async ({ relayResponse, prepared }) => {
+    if (relayResponse.status !== 'DONE') {
+      return;
+    }
     await walletState.applyRelayerSettlement({
       settlementDelta: relayResponse.settlementDelta,
       changeNote: prepared.changeNote
@@ -117,6 +138,7 @@ console.log(
     `payerPkHash=${payerPkHash}`,
     `leafIndex=${resolvedContext.note.leafIndex}`,
     `witnessMode=wallet-state`,
+    `syncSource=${walletIndexerUrl ? 'indexer' : 'rpc'}`,
     `statePath=${walletStatePath}`,
     `syncMode=${syncResult ? 'synced' : 'cached'}`,
     ...(syncResult

@@ -42,6 +42,7 @@ npm run start
 - `RELAYER_ENDPOINT` (default `http://127.0.0.1:3100`)
 - `PAYAI_URL` (default PayAI paid-content endpoint)
 - `POOL_RPC_URL` (RPC for the chain where `SHIELDED_POOL_ADDRESS` is deployed)
+- `WALLET_INDEXER_URL` (optional Envio GraphQL endpoint for wallet sync, recommended)
 - `SHIELDED_POOL_ADDRESS` (pool used for shielded proofs)
 - `POOL_FROM_BLOCK` (recommended first sync block; use pool deployment block)
 - `WALLET_STATE_PATH` (local persistent file for notes/commitments/sync cursor)
@@ -58,6 +59,7 @@ The script now uses SDK `FileBackedWalletState`:
 - stores note secrets + commitments in `WALLET_STATE_PATH`
 - stores `lastSyncedBlock` cursor
 - syncs only new blocks each run (incremental)
+- supports Envio GraphQL sync (`WALLET_INDEXER_URL`) to avoid RPC log range limits
 - derives witness locally from persisted state
 - applies relayer settlement deltas (change note + leaf indexes) after each call
 
@@ -68,10 +70,11 @@ Recommended usage:
 1. First bootstrap run:
    - set `WALLET_SYNC_ON_START=true`
    - set `POOL_FROM_BLOCK` to your pool deployment block
+   - if using Envio hosted, set `WALLET_INDEXER_URL=https://indexer.dev.hyperindex.xyz/<slug>/v1/graphql`
    - run script once to populate `wallet-state.json`
 2. Subsequent runs:
    - set `WALLET_SYNC_ON_START=false`
-   - script uses cached witness/context from `wallet-state.json` (minimal RPC)
+   - script uses cached witness/context from `wallet-state.json` (minimal RPC/indexer reads)
 
 ## Seed matching note on pool (required)
 

@@ -126,7 +126,8 @@ import {
 
 const walletState = await FileBackedWalletState.create({
   filePath: './agent-wallet-state.json',
-  rpcUrl: process.env.SEPOLIA_RPC_URL!,
+  rpcUrl: process.env.SEPOLIA_RPC_URL, // optional when indexerGraphqlUrl is set
+  indexerGraphqlUrl: process.env.WALLET_INDEXER_URL, // Envio hosted endpoint (recommended)
   shieldedPoolAddress: process.env.SHIELDED_POOL_ADDRESS as `0x${string}`,
   startBlock: 37697000n,
   confirmations: 2n,
@@ -157,6 +158,7 @@ Why this is better:
 - keeps witness construction local for better privacy
 - updates a file after interactions, so next run resumes from `lastSyncedBlock`
 - writes settlement deltas automatically (new change note + leaf indexes) when relayer returns them
+- can sync from Envio GraphQL (`indexerGraphqlUrl`) to avoid free-tier RPC `eth_getLogs` range caps
 
 Note encryption utilities:
 - `generateNoteEncryptionKeyPair()`
