@@ -1,6 +1,6 @@
 {
   "name": "envio-indexer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "scripts": {
     "clean": "tsc --clean",
     "build": "tsc --build",
@@ -12,7 +12,7 @@
     "test": "pnpm mocha"
   },
   "devDependencies": {
-    "@types/chai": "^4.3.11",    
+    "@types/chai": "^4.3.11",
     "@types/mocha": "10.0.6",
     "@types/node": "20.8.8",
     "ts-mocha": "^10.0.0",
