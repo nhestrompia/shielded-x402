@@ -240,9 +240,9 @@ export async function createNoirJsProofProviderFromCircuit(
 
   const noir = new Noir(circuit);
   const backend = new UltraHonkBackend(circuit.bytecode);
-  // Keep SDK defaults aligned with verifier generation scripts (`BB_ORACLE_HASH=keccak`).
-  // This prevents subtle prover/verifier transcript mismatches in deployed flows.
-  const backendProofOptions = config?.backendProofOptions ?? { keccak: true };
+  // Generated verifier contracts in this repo are ZK Honk by default.
+  // Keep SDK defaults aligned so proof byte length/transcript mode matches onchain verification.
+  const backendProofOptions = config?.backendProofOptions ?? { keccakZK: true };
   const providerConfig: NoirJsProofProviderConfig = {
     noir,
     backend: {

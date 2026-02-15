@@ -58,6 +58,7 @@ const relayerShieldedMerchantPubKey = (process.env.RELAYER_SHIELDED_MERCHANT_PUB
 const relayerShieldedVerifyingContract = (process.env.RELAYER_SHIELDED_VERIFYING_CONTRACT ??
   shieldedPoolAddress ??
   '0x2222222222222222222222222222222222222222') as `0x${string}`;
+const disablePreverify = (process.env.RELAYER_DISABLE_PREVERIFY ?? 'false').toLowerCase() === 'true';
 
 const challengeFetcher = createChallengeFetcher();
 const challengeBridge = createShieldedChallengeBridge({
@@ -68,7 +69,7 @@ const challengeBridge = createShieldedChallengeBridge({
 });
 
 const verifier =
-  rpcUrl && shieldedPoolAddress && verifyingContractAddress
+  !disablePreverify && rpcUrl && shieldedPoolAddress && verifyingContractAddress
     ? createOnchainVerifier({
         rpcUrl,
         shieldedPoolAddress,
@@ -117,7 +118,10 @@ const processor = createPaymentRelayerProcessor({
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && verifyingContractAddress),
+    onchainVerifierEnabled: Boolean(
+      !disablePreverify && rpcUrl && shieldedPoolAddress && verifyingContractAddress
+    ),
+    preverifyDisabled: disablePreverify,
     verifierContractAddress: verifyingContractAddress ?? null,
     onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && relayerPrivateKey),
     payoutMode,

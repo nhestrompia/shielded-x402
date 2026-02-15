@@ -49,7 +49,9 @@ const account = privateKeyToAccount(payerPrivateKey);
 const sdk = new ShieldedClientSDK({
   endpoint: relayerEndpoint,
   signer: (message) => account.signMessage({ message }),
-  proofProvider: await createNoirJsProofProviderFromDefaultCircuit()
+  proofProvider: await createNoirJsProofProviderFromDefaultCircuit({
+    backendProofOptions: { keccakZK: true }
+  })
 });
 
 const note = {
