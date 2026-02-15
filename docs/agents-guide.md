@@ -9,16 +9,25 @@ This guide is for AI agents or agent frameworks that currently support normal x4
 - Payment payload: proof bundle + public inputs (`ShieldedPaymentResponse`).
 - Merchant gateway endpoints:
   - `GET /paid/data` (protected resource)
+  - `GET /x402/requirement` (optional prefetch of a fresh challenge)
   - `GET /health`
   - `GET /agent/:did`, `GET /agent/:did/reputation`, `POST /agent` (ERC-8004 adapter endpoints, optional)
+- Payment relayer endpoints:
+  - `POST /v1/relay/pay`
+  - `GET /v1/relay/status/:settlementId`
+  - `GET /health`
+
+## Merchant-side compatibility model
+
+- Merchants keep the same x402 HTTP contract (`402` challenge + retry headers).
+- Agent keeps proof generation local.
+- Relayer verifies challenge/proof bindings, settles onchain, then executes merchant payout adapter.
+- Merchant integration stays unchanged.
 
 ## Header contract (strict)
 
-- Challenge response header: `x-payment-requirement`
-- Retry request headers:
-  - `PAYMENT-RESPONSE`
-  - `PAYMENT-SIGNATURE`
-  - `X-CHALLENGE-NONCE`
+- Challenge response header: `PAYMENT-REQUIRED` (base64 x402 v2 envelope).
+- Retry request header: `PAYMENT-SIGNATURE` (base64 signed payment envelope).
 
 Use constants from `/shielded-402/packages/shared-types/src/x402.ts`.
 
@@ -28,13 +37,25 @@ Use this decision rule:
 
 1. Send request normally.
 2. If status is not `402`, return response.
-3. Parse `x-payment-requirement`.
+3. Parse `PAYMENT-REQUIRED`.
 4. If `rail === "shielded-usdc"`, run shielded flow.
 5. Otherwise run your existing normal x402 flow.
 
 This keeps compatibility with endpoints that may mix rails.
 
 ## Agent flow: shielded payment
+
+### Prerequisite: agent must fund the shielded pool
+
+Before any paid request, the agent must hold a spendable note:
+
+1. Approve and deposit ERC-20 into `ShieldedPool`.
+2. Index the `Deposited` event and derive/store:
+   - note `{ amount, rho, pkHash, commitment, leafIndex }`
+   - current Merkle witness for that note.
+3. Only then can the agent generate a valid spend proof.
+
+Without this deposit+note state, proof generation will succeed structurally but settlement will fail onchain.
 
 1. Receive `402` and parse requirement:
    - `amount`
@@ -43,10 +64,19 @@ This keeps compatibility with endpoints that may mix rails.
    - `verifyingContract`
 2. Build witness from local note/Merkle state.
 3. Call client SDK:
-   - easiest: `createShieldedFetch(...)` and call that wrapper instead of raw `fetch`
+   - preferred: `createRelayedShieldedFetch(...)` and call that wrapper instead of raw `fetch`
+   - direct merchant mode: `createShieldedFetch(...)`
    - configure `proofProvider` with `createNoirJsProofProviderFromDefaultCircuit()` for in-process proving
-4. Retry with required headers.
-5. On `200`, treat as settled for API access.
+4. Wrapper posts the proof bundle to relayer (`/v1/relay/pay`).
+5. Relayer settles onchain and returns merchant response.
+6. On `200`, treat as settled for API access.
+
+Fast-start option for agents:
+
+1. Call `GET /x402/requirement` first.
+2. Start proof generation immediately with that nonce.
+3. Send the paid request once headers are ready (often avoids an extra round trip).
+4. If merchant returns `402` again (expired/stale nonce), request a new `PAYMENT-REQUIRED` and regenerate.
 
 Reference implementation:
 
@@ -72,9 +102,9 @@ export async function fetchWithAnyRail(
   const first = await fetch(url, init);
   if (first.status !== 402) return first;
 
-  const requirementRaw = first.headers.get(X402_HEADERS.paymentRequirement);
-  if (!requirementRaw) throw new Error("missing x-payment-requirement");
-  const requirement = JSON.parse(requirementRaw) as { rail: string };
+  const requirementRaw = first.headers.get(X402_HEADERS.paymentRequired);
+  if (!requirementRaw) throw new Error("missing PAYMENT-REQUIRED");
+  const requirement = ctx.shielded.parse402Response(first).requirement;
 
   if (requirement.rail === "shielded-usdc") {
     return ctx.shielded.fetchWithShieldedPayment(
@@ -147,9 +177,11 @@ Goal: verify local code paths and constraints compile.
 
 ### Level 2: local HTTP handshake
 
-1. Start gateway:
+1. Start relayer:
+   - `pnpm relayer:dev`
+2. Start merchant endpoint:
    - `pnpm --filter @shielded-x402/merchant-gateway dev`
-2. Run demo client:
+3. Run demo client:
    - `pnpm --filter @shielded-x402/demo-api demo`
 
 Goal: verify `402 -> retry -> 200` behavior and header handling.
@@ -160,7 +192,7 @@ Goal: verify `402 -> retry -> 200` behavior and header handling.
 2. Generate verifier + fixture:
    - `pnpm circuit:verifier`
    - `pnpm circuit:fixture`
-3. Start gateway with onchain verifier env.
+3. Start relayer with onchain verifier + settlement env.
 4. Run:
    - `pnpm test:sepolia-live`
 
@@ -183,7 +215,7 @@ The following are intentional defaults for MVP/dev, but should be explicitly set
    - `/shielded-402/circuits/spend_change/src/main.nr`
    - These must remain identical across circuit/client/merchant.
 5. Merkle depth constant:
-   - Circuit path depth and contract tree depth are fixed to `32`.
+   - Circuit path depth and contract tree depth are fixed to `24`.
 6. Dev-only deterministic nonce:
    - `FIXED_CHALLENGE_NONCE` should be set only for deterministic tests.
 7. Demo private key:

@@ -24,9 +24,9 @@ jobs:
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
           echo "$HOME/.nargo/bin" >> $GITHUB_PATH
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup -v 1.0.0-beta.13
+          noirup -v 1.0.0-beta.18
       - name: Install
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
       - name: Install Foundry deps
         run: pnpm contracts:deps
       - name: Doctor

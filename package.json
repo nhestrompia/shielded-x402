@@ -12,8 +12,8 @@
     "build": "pnpm -r build",
     "pretest": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/client build",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint",
+    "typecheck": "pnpm --filter @shielded-x402/shared-types build && pnpm -r typecheck",
+    "lint": "pnpm --filter @shielded-x402/shared-types build && pnpm -r lint",
     "doctor": "bash scripts/doctor.sh",
     "contracts:deps": "bash scripts/setup-foundry-deps.sh",
     "contracts:test": "FOUNDRY_OFFLINE=true forge test --root contracts",
@@ -28,7 +28,10 @@
     "test:sepolia-live": "pnpm --filter @shielded-x402/merchant-gateway test:sepolia-live",
     "pretest:anvil-live": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/client build",
     "test:anvil-live": "pnpm --filter @shielded-x402/merchant-gateway test:anvil-live",
-    "e2e:anvil": "bash ops/e2e-anvil.sh"
+    "e2e:anvil": "bash ops/e2e-anvil.sh",
+    "relayer:dev": "pnpm --filter @shielded-x402/payment-relayer dev",
+    "relayer:typecheck": "pnpm --filter @shielded-x402/payment-relayer typecheck",
+    "relayer:test": "pnpm --filter @shielded-x402/payment-relayer test"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

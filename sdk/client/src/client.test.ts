@@ -1,4 +1,11 @@
-import { X402_HEADERS, type Hex } from '@shielded-x402/shared-types';
+import {
+  CRYPTO_SPEC,
+  X402_HEADERS,
+  buildPaymentRequiredHeader,
+  parsePaymentSignatureHeader,
+  type Hex,
+  type PaymentRequirement
+} from '@shielded-x402/shared-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ShieldedClientSDK } from './client.js';
 import { deriveCommitment } from './crypto.js';
@@ -11,8 +18,21 @@ afterEach(() => {
 });
 
 describe('ShieldedClientSDK', () => {
+  const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
   const BN254_FIELD_MODULUS =
     21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  const makeRequirement = (): PaymentRequirement => ({
+    scheme: 'exact',
+    network: 'eip155:11155111',
+    asset: '0x0000000000000000000000000000000000000000000000000000000000000000',
+    payTo: '0x0000000000000000000000000000000000000002',
+    rail: 'shielded-usdc',
+    amount: '40',
+    challengeNonce: '0x9999999999999999999999999999999999999999999999999999999999999999',
+    challengeExpiry: String(Date.now() + 60_000),
+    merchantPubKey: '0x0000000000000000000000000000000000000000000000000000000000000012',
+    verifyingContract: '0x0000000000000000000000000000000000000002'
+  });
 
   it('builds a spend payload with expected fields', () => {
     const sdk = new ShieldedClientSDK({
@@ -68,10 +88,10 @@ describe('ShieldedClientSDK', () => {
     } as const;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
-      path: new Array<string>(32).fill(
+      path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
-      indexBits: new Array<number>(32).fill(0)
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
     };
 
     const providerProof = '0x1234' as Hex;
@@ -88,21 +108,12 @@ describe('ShieldedClientSDK', () => {
       proofProvider
     });
 
-    const requirement = {
-      rail: 'shielded-usdc',
-      amount: '40',
-      challengeNonce:
-        '0x9999999999999999999999999999999999999999999999999999999999999999',
-      challengeExpiry: String(Date.now() + 60_000),
-      merchantPubKey:
-        '0x0000000000000000000000000000000000000000000000000000000000000012',
-      verifyingContract: '0x0000000000000000000000000000000000000002'
-    } as const;
+    const requirement = makeRequirement();
 
     const first = new Response(null, {
       status: 402,
       headers: {
-        [X402_HEADERS.paymentRequirement]: JSON.stringify(requirement)
+        [X402_HEADERS.paymentRequired]: buildPaymentRequiredHeader(requirement)
       }
     });
     const second = new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -126,10 +137,10 @@ describe('ShieldedClientSDK', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const retryInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
     const retryHeaders = new Headers(retryInit.headers);
-    const payload = retryHeaders.get(X402_HEADERS.paymentResponse);
-    expect(payload).toBeTruthy();
-    const parsed = JSON.parse(payload ?? '{}') as { proof: string };
-    expect(parsed.proof).toBe(providerProof);
+    const signed = retryHeaders.get(X402_HEADERS.paymentSignature);
+    expect(signed).toBeTruthy();
+    const parsed = parsePaymentSignatureHeader(signed ?? '');
+    expect(parsed.payload.proof).toBe(providerProof);
   });
 
   it('buildSpendProofWithProvider replaces placeholder proof', async () => {
@@ -146,10 +157,10 @@ describe('ShieldedClientSDK', () => {
     } as const;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
-      path: new Array<string>(32).fill(
+      path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
-      indexBits: new Array<number>(32).fill(0)
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
     };
     const proofProvider = {
       generateProof: vi.fn(async ({ expectedPublicInputs }) => ({
@@ -180,6 +191,55 @@ describe('ShieldedClientSDK', () => {
     expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
   });
 
+  it('prepare402Payment builds signed payment headers before issuing request', async () => {
+    const note = {
+      amount: 100n,
+      rho: '0x0000000000000000000000000000000000000000000000000000000000000011',
+      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009',
+      commitment: deriveCommitment(
+        100n,
+        '0x0000000000000000000000000000000000000000000000000000000000000011',
+        '0x0000000000000000000000000000000000000000000000000000000000000009'
+      ),
+      leafIndex: 0
+    } as const;
+    const witness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+      path: new Array<string>(MERKLE_DEPTH).fill(
+        '0x0000000000000000000000000000000000000000000000000000000000000000'
+      ) as Hex[],
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
+    };
+    const requirement = makeRequirement();
+    const proofProvider = {
+      generateProof: vi.fn(async ({ expectedPublicInputs }) => ({
+        proof: '0x55',
+        publicInputs: expectedPublicInputs
+      }))
+    };
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://localhost:3000',
+      signer: async () => '0xsig',
+      proofProvider
+    });
+
+    const prepared = await sdk.prepare402Payment(
+      requirement,
+      note,
+      witness,
+      note.pkHash,
+      { 'x-custom': '1' }
+    );
+    expect(prepared.response.proof).toBe('0x55');
+    expect(prepared.headers.get('x-custom')).toBe('1');
+    expect(prepared.headers.has(X402_HEADERS.paymentSignature)).toBe(true);
+    const signedHeader = prepared.headers.get(X402_HEADERS.paymentSignature);
+    const signedPayload = parsePaymentSignatureHeader(signedHeader ?? '');
+    expect(signedPayload.challengeNonce).toBe(requirement.challengeNonce);
+    expect(signedPayload.payload.proof).toBe('0x55');
+    expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
+  });
+
   it('auto-generated spend rhos are BN254 field-safe', () => {
     const sdk = new ShieldedClientSDK({
       endpoint: 'http://localhost:3000',
@@ -198,10 +258,10 @@ describe('ShieldedClientSDK', () => {
     } as const;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
-      path: new Array<string>(32).fill(
+      path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
-      indexBits: new Array<number>(32).fill(0)
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
     };
     const bundle = sdk.buildSpendProof({
       note,

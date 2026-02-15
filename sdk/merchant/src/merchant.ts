@@ -15,19 +15,31 @@ import type {
   MerchantConfig,
   MerchantHooks,
   SettlementRecord,
-  VerifyContext,
   VerifyResult,
   WithdrawRequest,
   WithdrawResult
 } from './types.js';
-import type { ShieldedPaymentResponse } from '@shielded-x402/shared-types';
+import {
+  CRYPTO_SPEC,
+  buildPaymentRequiredHeader,
+  normalizeRequirement,
+  parsePaymentSignatureHeader,
+  type PaymentRequirement,
+  type ShieldedPaymentResponse
+} from '@shielded-x402/shared-types';
 
 const withdrawArgs = parseAbiParameters('address merchant,address recipient,uint256 amount,bytes32 claimId,uint64 deadline,uint8 v,bytes32 r,bytes32 s');
-const CHALLENGE_DOMAIN_HASH = '0xe32e24a51c351093d339c0035177dc2da5c1b8b9563e414393edd75506dcc055' as Hex;
 
 interface ActiveChallenge {
   expiresAt: number;
   amount: bigint;
+}
+
+interface SignedPaymentEnvelope {
+  payload: ShieldedPaymentResponse;
+  signature: Hex;
+  challengeNonce: string;
+  accepted?: PaymentRequirement;
 }
 
 function randomHex32(): Hex {
@@ -64,38 +76,59 @@ export class ShieldedMerchantSDK {
       amount: this.config.price
     });
 
-    const requirement = {
+    const requirement = normalizeRequirement({
+      x402Version: 2,
+      scheme: 'exact',
+      network: this.config.network ?? 'eip155:11155111',
+      asset:
+        this.config.asset ??
+        '0x0000000000000000000000000000000000000000000000000000000000000000',
+      payTo: this.config.payTo ?? this.config.verifyingContract,
       rail: this.config.rail,
       amount: this.config.price.toString(),
       challengeNonce: nonce,
       challengeExpiry: String(expiry),
       merchantPubKey: this.config.merchantPubKey,
-      verifyingContract: this.config.verifyingContract
-    };
+      verifyingContract: this.config.verifyingContract,
+      maxTimeoutSeconds: Math.floor(this.config.challengeTtlMs / 1000),
+      extra: {
+        rail: this.config.rail,
+        challengeNonce: nonce,
+        challengeExpiry: String(expiry),
+        merchantPubKey: this.config.merchantPubKey,
+        verifyingContract: this.config.verifyingContract
+      }
+    });
 
     return {
       requirement,
-      headerValue: JSON.stringify(requirement)
+      headerValue: buildPaymentRequiredHeader(requirement)
     };
   }
 
-  async verifyShieldedPayment(
-    paymentResponseHeader: string | null,
-    signatureHeader: string | null,
-    context: VerifyContext
-  ): Promise<VerifyResult> {
-    if (!paymentResponseHeader || !signatureHeader) {
+  async verifyShieldedPayment(signatureHeader: string | null): Promise<VerifyResult> {
+    if (!signatureHeader) {
       return { ok: false, reason: 'missing payment headers' };
     }
 
-    let payload: unknown;
+    let signed: SignedPaymentEnvelope;
     try {
-      payload = JSON.parse(paymentResponseHeader);
+      signed = this.parseSignedPaymentEnvelope(signatureHeader);
     } catch {
-      return { ok: false, reason: 'invalid payment payload json' };
+      return { ok: false, reason: 'invalid PAYMENT-SIGNATURE header' };
+    }
+    const payload = signed.payload;
+    const signature = signed.signature;
+    const challengeNonce = signed.challengeNonce;
+    const accepted = signed.accepted;
+    if (!accepted) {
+      return { ok: false, reason: 'missing accepted requirement in PAYMENT-SIGNATURE' };
+    }
+    if (!this.requirementMatchesMerchant(accepted)) {
+      return { ok: false, reason: 'accepted requirement does not match merchant config' };
     }
 
-    const expiresAt = this.activeChallenges.get(context.challengeNonce);
+    const expiresAt = this.activeChallenges.get(challengeNonce);
     if (!expiresAt) return { ok: false, reason: 'unknown challenge nonce' };
     if (this.currentTime() > expiresAt.expiresAt) return { ok: false, reason: 'challenge expired' };
     if (!this.validatePayloadShape(payload)) return { ok: false, reason: 'invalid payment payload schema' };
@@ -104,7 +137,12 @@ export class ShieldedMerchantSDK {
     const amountWord = (`0x${expiresAt.amount.toString(16).padStart(64, '0')}` as Hex);
     const merchantWord = pad(this.config.verifyingContract, { size: 32 });
     const expectedChallengeHash = keccak256(
-      concatHex([CHALLENGE_DOMAIN_HASH, context.challengeNonce as Hex, amountWord, merchantWord])
+      concatHex([
+        CRYPTO_SPEC.challengeDomainHash as Hex,
+        challengeNonce as Hex,
+        amountWord,
+        merchantWord
+      ])
     );
     if (payload.challengeHash !== expectedChallengeHash) {
       return { ok: false, reason: 'challenge hash mismatch' };
@@ -130,13 +168,14 @@ export class ShieldedMerchantSDK {
 
     let payer: Hex;
     try {
-      const msgHash = hashMessage(paymentResponseHeader);
-      payer = (await recoverAddress({ hash: msgHash, signature: signatureHeader as Hex })) as Hex;
+      const signedPayload = JSON.stringify(payload);
+      const msgHash = hashMessage(signedPayload);
+      payer = (await recoverAddress({ hash: msgHash, signature })) as Hex;
     } catch {
       return { ok: false, reason: 'invalid payment signature' };
     }
 
-    this.activeChallenges.delete(context.challengeNonce);
+    this.activeChallenges.delete(challengeNonce);
     this.accepted.set(payload.nullifier, {
       nullifier: payload.nullifier,
       root: payload.root,
@@ -252,6 +291,27 @@ export class ShieldedMerchantSDK {
       fixedHex.test(cast.changeCommitment) &&
       fixedHex.test(cast.challengeHash) &&
       hexLike.test(cast.encryptedReceipt)
+    );
+  }
+
+  private parseSignedPaymentEnvelope(signatureHeader: string): SignedPaymentEnvelope {
+    const envelope = parsePaymentSignatureHeader(signatureHeader);
+    const accepted = normalizeRequirement(envelope.accepted);
+    const challengeNonce = envelope.challengeNonce ?? accepted.challengeNonce;
+    return {
+      payload: envelope.payload,
+      signature: envelope.signature,
+      challengeNonce,
+      accepted
+    };
+  }
+
+  private requirementMatchesMerchant(requirement: PaymentRequirement): boolean {
+    return (
+      requirement.rail === this.config.rail &&
+      requirement.amount === this.config.price.toString() &&
+      requirement.merchantPubKey.toLowerCase() === this.config.merchantPubKey.toLowerCase() &&
+      requirement.verifyingContract.toLowerCase() === this.config.verifyingContract.toLowerCase()
     );
   }
 }

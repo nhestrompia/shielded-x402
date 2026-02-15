@@ -3,6 +3,7 @@ import {
   buildWitnessFromCommitments,
   createShieldedFetch,
   deriveCommitment,
+  deriveNullifier,
 } from "@shielded-x402/client";
 import { type Hex } from "@shielded-x402/shared-types";
 import { createPublicClient, http } from "viem";
@@ -16,6 +17,13 @@ const poolAbi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "isNullifierUsed",
+    stateMutability: "view",
+    inputs: [{ name: "nullifier", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
   },
 ] as const;
 
@@ -57,6 +65,8 @@ async function main(): Promise<void> {
     leafIndex: 0,
   } as const;
   const witness = buildWitnessFromCommitments([note.commitment], 0);
+  const payerPkHash = toWord(9n);
+  const expectedNullifier = deriveNullifier(payerPkHash, note.commitment);
   if (latestRoot.toLowerCase() !== witness.root.toLowerCase()) {
     throw new Error(
       `fixture root mismatch: chain latestRoot=${latestRoot} witnessRoot=${witness.root}. ` +
@@ -75,7 +85,7 @@ async function main(): Promise<void> {
     resolveContext: async () => ({
       note,
       witness,
-      payerPkHash: toWord(9n),
+      payerPkHash,
     }),
   });
   const retry = await shieldedFetch(`${gatewayUrl.replace(/\/$/, "")}/paid/data`, {
@@ -90,6 +100,15 @@ async function main(): Promise<void> {
   const body = await retry.json();
   if (!body.ok) {
     throw new Error("paid response body missing ok=true");
+  }
+  const nullifierUsed = await client.readContract({
+    address: poolAddress,
+    abi: poolAbi,
+    functionName: "isNullifierUsed",
+    args: [expectedNullifier],
+  });
+  if (!nullifierUsed) {
+    throw new Error("expected nullifier to be used after paid request settlement");
   }
 
   console.log("anvil live e2e passed");

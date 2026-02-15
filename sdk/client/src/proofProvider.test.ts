@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Hex } from '@shielded-x402/shared-types';
+import { CRYPTO_SPEC, type Hex } from '@shielded-x402/shared-types';
 import { createNoirJsProofProvider } from './proofProvider.js';
 import type { ProofProviderRequest } from './types.js';
+
+const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
 
 function expandCompactPublicInputs(inputs: Hex[]): string[] {
   const out: string[] = [];
@@ -29,10 +31,10 @@ function sampleRequest(): ProofProviderRequest {
     },
     witness: {
       root: '0x0000000000000000000000000000000000000000000000000000000000000002',
-      path: new Array<Hex>(32).fill(
+      path: new Array<Hex>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ),
-      indexBits: new Array<number>(32).fill(0)
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
     },
     nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000009',
     merchantPubKey: '0x0000000000000000000000000000000000000000000000000000000000000012',

@@ -4,5 +4,6 @@ export * from './indexer.js';
 export * from './merkle.js';
 export * from './notes.js';
 export * from './proofProvider.js';
+export * from './relayerFetch.js';
 export * from './shieldedFetch.js';
 export * from './types.js';

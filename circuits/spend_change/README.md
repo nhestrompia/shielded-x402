@@ -13,7 +13,7 @@ This directory contains the Noir circuit for one-note spend with merchant + chan
   - `changeCommitment`
   - `challengeHash`
   - `amount`
-- Merkle path input is byte-accurate (`[[u8; 32]; 32]`) to avoid Field-modulus loss for hash values.
+- Merkle path input is byte-accurate (`[[u8; 32]; 24]`) to avoid Field-modulus loss for hash values.
 
 ## Commands
 

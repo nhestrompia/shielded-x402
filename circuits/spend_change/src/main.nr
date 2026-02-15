@@ -51,11 +51,11 @@ fn keccak4(a: [u8; 32], b: [u8; 32], c: [u8; 32], d: [u8; 32]) -> [u8; 32] {
 
 fn merkle_root_from_path(
     leaf: [u8; 32],
-    path: [[u8; 32]; 32],
-    index_bits: [u8; 32]
+    path: [[u8; 32]; 24],
+    index_bits: [u8; 24]
 ) -> [u8; 32] {
     let mut cur = leaf;
-    for i in 0..32 {
+    for i in 0..24 {
         assert((index_bits[i] == 0) | (index_bits[i] == 1));
         if index_bits[i] == 0 {
             cur = keccak2(cur, path[i]);
@@ -71,8 +71,8 @@ fn main(
     note_rho: Field,
     note_pk_hash: Field,
     nullifier_secret: Field,
-    merkle_path: [[u8; 32]; 32],
-    index_bits: [u8; 32],
+    merkle_path: [[u8; 32]; 24],
+    index_bits: [u8; 24],
     merchant_pk_hash: Field,
     merchant_rho: Field,
     change_pk_hash: Field,

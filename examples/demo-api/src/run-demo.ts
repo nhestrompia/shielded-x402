@@ -1,4 +1,8 @@
-import { ShieldedClientSDK, buildWitnessFromCommitments } from '@shielded-x402/client';
+import {
+  ShieldedClientSDK,
+  buildWitnessFromCommitments,
+  createRelayedShieldedFetch
+} from '@shielded-x402/client';
 import type { Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -17,13 +21,27 @@ async function run(): Promise<void> {
   const commitments = [deposited.note.commitment];
   const witness = buildWitnessFromCommitments(commitments, 0);
 
-  const response = await sdk.fetchWithShieldedPayment(
-    'http://localhost:3000/paid/data',
-    { method: 'GET' },
-    deposited.note,
-    witness,
-    ownerPkHash
-  );
+  const merchantUrl = process.env.DEMO_MERCHANT_URL ?? 'http://localhost:3000/paid/data';
+  const relayerEndpoint = process.env.DEMO_RELAYER_ENDPOINT;
+
+  const response = relayerEndpoint
+    ? await createRelayedShieldedFetch({
+        sdk,
+        relayerEndpoint,
+        challengeUrlResolver: ({ input }) => `${new URL(input).origin}/x402/requirement`,
+        resolveContext: async () => ({
+          note: deposited.note,
+          witness,
+          payerPkHash: ownerPkHash
+        })
+      })(merchantUrl, { method: 'GET' })
+    : await sdk.fetchWithShieldedPayment(
+        merchantUrl,
+        { method: 'GET' },
+        deposited.note,
+        witness,
+        ownerPkHash
+      );
 
   const body = await response.text();
   console.log(`status=${response.status}`);

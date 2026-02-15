@@ -7,7 +7,7 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 contract ShieldedPool is IShieldedPool {
     using SafeTransferLib for address;
-    uint8 internal constant TREE_DEPTH = 32;
+    uint8 internal constant TREE_DEPTH = 24;
 
     struct MerchantAuth {
         address merchant;

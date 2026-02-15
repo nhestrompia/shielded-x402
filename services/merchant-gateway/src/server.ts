@@ -1,16 +1,19 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { ShieldedMerchantSDK, createLocalWithdrawalSigner } from '@shielded-x402/merchant';
+import { X402_HEADERS } from '@shielded-x402/shared-types';
 import type { Erc8004AdapterConfig } from '@shielded-x402/erc8004-adapter';
 import type { MerchantConfig, MerchantHooks, WithdrawRequest } from '@shielded-x402/merchant';
 import { Erc8004Adapter } from '@shielded-x402/erc8004-adapter';
 import { createShieldedPaymentMiddleware } from './middleware/shieldedPayment.js';
 import { createAllowAllVerifier, createOnchainVerifier } from './lib/verifier.js';
+import { createNoopSettlement, createOnchainSettlement } from './lib/settlement.js';
 
 const rpcUrl = process.env.SEPOLIA_RPC_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined;
 const ultraVerifierAddress = process.env.ULTRA_VERIFIER_ADDRESS as `0x${string}` | undefined;
 const paymentVerifyingContract = process.env.PAYMENT_VERIFYING_CONTRACT as `0x${string}` | undefined;
+const paymentRelayerPrivateKey = process.env.PAYMENT_RELAYER_PRIVATE_KEY as `0x${string}` | undefined;
 const merchantWithdrawPrivateKey = process.env.MERCHANT_WITHDRAW_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
@@ -33,6 +36,15 @@ const verifier =
       })
     : createAllowAllVerifier();
 
+const settlement =
+  rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey
+    ? createOnchainSettlement({
+        rpcUrl,
+        shieldedPoolAddress,
+        relayerPrivateKey: paymentRelayerPrivateKey
+      })
+    : createNoopSettlement();
+
 const withdrawalSigner = merchantWithdrawPrivateKey
   ? createLocalWithdrawalSigner(merchantWithdrawPrivateKey)
   : undefined;
@@ -47,7 +59,7 @@ const merchantConfig: MerchantConfig = {
     paymentVerifyingContract ??
     (process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined) ??
     '0x2222222222222222222222222222222222222222',
-  challengeTtlMs: Number(process.env.CHALLENGE_TTL_MS ?? '60000')
+  challengeTtlMs: Number(process.env.CHALLENGE_TTL_MS ?? '180000')
 };
 if (withdrawalSigner) {
   merchantConfig.merchantSignerAddress = withdrawalSigner.address;
@@ -74,7 +86,18 @@ app.get('/health', (_req, res) => {
     ok: true,
     erc8004Enabled,
     onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && ultraVerifierAddress),
+    onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey),
     withdrawalSignerEnabled: Boolean(withdrawalSigner)
+  });
+});
+
+app.get('/x402/requirement', (_req, res) => {
+  const challenge = sdk.issue402();
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader(X402_HEADERS.paymentRequired, challenge.headerValue);
+  res.status(200).json({
+    requirement: challenge.requirement
   });
 });
 
@@ -108,7 +131,7 @@ app.post('/agent', async (req, res) => {
   }
 });
 
-app.get('/paid/data', createShieldedPaymentMiddleware({ sdk, verifier }), (_req, res) => {
+app.get('/paid/data', createShieldedPaymentMiddleware({ sdk, verifier, settlement }), (_req, res) => {
   res.json({
     ok: true,
     data: {

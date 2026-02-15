@@ -3,6 +3,7 @@ set -euo pipefail
 
 CIRCUIT_DIR="${1:-circuits/spend_change}"
 OUT_DIR="${2:-contracts/generated}"
+SDK_CIRCUIT_ARTIFACT_OUT="${3:-sdk/client/src/circuits/spend_change.json}"
 
 resolve_cmd() {
   local cmd="$1"
@@ -120,6 +121,7 @@ else
 fi
 
 cp ./target/UltraVerifier.sol "../../$OUT_DIR/UltraVerifier.sol"
+cp ./target/spend_change.json "../../$SDK_CIRCUIT_ARTIFACT_OUT"
 
 # bb may emit mixed pragma declarations including ^0.8.27 in embedded libs.
 # Keep generated verifier compatible with project compiler pin (0.8.26).
@@ -129,3 +131,4 @@ rm -f "../../$OUT_DIR/UltraVerifier.sol.bak"
 popd >/dev/null
 
 echo "Generated verifier at $OUT_DIR/UltraVerifier.sol"
+echo "Synced Noir circuit artifact at $SDK_CIRCUIT_ARTIFACT_OUT"

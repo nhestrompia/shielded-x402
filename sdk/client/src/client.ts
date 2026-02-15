@@ -1,8 +1,23 @@
-import { X402_HEADERS, type Hex, type PaymentRequirement, type ShieldedNote, type ShieldedPaymentResponse } from '@shielded-x402/shared-types';
+import {
+  X402_HEADERS,
+  buildPaymentSignatureHeader,
+  normalizeRequirement,
+  parsePaymentRequiredHeader,
+  type Hex,
+  type PaymentRequirement,
+  type ShieldedNote,
+  type ShieldedPaymentResponse
+} from '@shielded-x402/shared-types';
 import { randomBytes } from 'node:crypto';
 import { deriveChallengeHash, deriveCommitment, deriveNullifier } from './crypto.js';
 import { deriveWitness, type MerkleWitness } from './merkle.js';
-import type { Parsed402, ShieldedClientConfig, SpendBuildParams, SpendProofBundle } from './types.js';
+import type {
+  Parsed402,
+  Prepared402Payment,
+  ShieldedClientConfig,
+  SpendBuildParams,
+  SpendProofBundle
+} from './types.js';
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -121,27 +136,36 @@ export class ShieldedClientSDK {
     };
   }
 
-  async pay402(paymentResponse: ShieldedPaymentResponse): Promise<{ payload: string; signature: string }> {
+  async pay402(
+    paymentResponse: ShieldedPaymentResponse,
+    requirement: PaymentRequirement,
+    challengeNonce: Hex
+  ): Promise<{ payload: string; signature: string; paymentSignatureHeader: string }> {
     const payload = JSON.stringify(paymentResponse);
     const signature = await this.config.signer(payload);
-    return { payload, signature };
+    const paymentSignatureHeader = buildPaymentSignatureHeader({
+      x402Version: 2,
+      accepted: normalizeRequirement(requirement),
+      payload: paymentResponse,
+      challengeNonce,
+      signature: signature as Hex
+    });
+    return { payload, signature, paymentSignatureHeader };
   }
 
   parse402Response(response: Response): Parsed402 {
-    const header = response.headers.get(X402_HEADERS.paymentRequirement);
-    if (!header) throw new Error(`missing ${X402_HEADERS.paymentRequirement} header`);
-    return { requirement: JSON.parse(header) as PaymentRequirement };
+    const header = response.headers.get(X402_HEADERS.paymentRequired);
+    if (!header) throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
+    return { requirement: parsePaymentRequiredHeader(header) };
   }
 
-  async complete402Payment(
-    input: string,
-    init: RequestInit,
+  async prepare402Payment(
     requirement: PaymentRequirement,
     note: ShieldedNote,
     witness: MerkleWitness,
     payerPkHash: Hex,
-    fetchFn: typeof fetch = fetch
-  ): Promise<Response> {
+    baseHeaders?: HeadersInit
+  ): Promise<Prepared402Payment> {
     if (requirement.rail !== 'shielded-usdc') {
       throw new Error(`unsupported rail: ${requirement.rail}`);
     }
@@ -162,16 +186,41 @@ export class ShieldedClientSDK {
     };
 
     const bundleWithProof = await this.buildSpendProofWithProvider(spendParams);
+    const signed = await this.pay402(
+      bundleWithProof.response,
+      requirement,
+      requirement.challengeNonce as Hex
+    );
+    const headers = new Headers(baseHeaders);
+    headers.set(X402_HEADERS.paymentSignature, signed.paymentSignatureHeader);
 
-    const signed = await this.pay402(bundleWithProof.response);
-    const headers = new Headers(init.headers);
-    headers.set(X402_HEADERS.paymentResponse, signed.payload);
-    headers.set(X402_HEADERS.paymentSignature, signed.signature);
-    headers.set(X402_HEADERS.challengeNonce, requirement.challengeNonce);
+    return {
+      requirement,
+      headers,
+      response: bundleWithProof.response
+    };
+  }
+
+  async complete402Payment(
+    input: string,
+    init: RequestInit,
+    requirement: PaymentRequirement,
+    note: ShieldedNote,
+    witness: MerkleWitness,
+    payerPkHash: Hex,
+    fetchFn: typeof fetch = fetch
+  ): Promise<Response> {
+    const prepared = await this.prepare402Payment(
+      requirement,
+      note,
+      witness,
+      payerPkHash,
+      init.headers
+    );
 
     return fetchFn(input, {
       ...init,
-      headers
+      headers: prepared.headers
     });
   }
 

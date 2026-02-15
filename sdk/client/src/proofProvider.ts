@@ -1,8 +1,10 @@
-import { pad, type Hex } from 'viem';
+import { CRYPTO_SPEC, type Hex } from '@shielded-x402/shared-types';
+import { pad } from 'viem';
 import type { ProofProvider, ProofProviderRequest, ProofProviderResult } from './types.js';
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
 
 const toHexWord = (value: bigint): Hex => (`0x${value.toString(16).padStart(64, '0')}` as Hex);
 
@@ -89,14 +91,18 @@ const normalizeProofHex = (value: unknown): Hex => {
 };
 
 const toNoirInput = (request: ProofProviderRequest): Record<string, unknown> => {
-  const pathBytes = request.witness.path.map((value) => hexToBytes32(value));
+  if (request.witness.path.length > MERKLE_DEPTH || request.witness.indexBits.length > MERKLE_DEPTH) {
+    throw new Error(`merkle witness exceeds configured depth ${MERKLE_DEPTH}`);
+  }
+
+  const pathBytes = request.witness.path.slice(0, MERKLE_DEPTH).map((value) => hexToBytes32(value));
   const merklePath = [...pathBytes];
-  while (merklePath.length < 32) {
+  while (merklePath.length < MERKLE_DEPTH) {
     merklePath.push(new Array<number>(32).fill(0));
   }
 
-  const indexBits = request.witness.indexBits.slice(0, 32);
-  while (indexBits.length < 32) {
+  const indexBits = request.witness.indexBits.slice(0, MERKLE_DEPTH);
+  while (indexBits.length < MERKLE_DEPTH) {
     indexBits.push(0);
   }
   const normalizedIndexBits = indexBits.map((bit) => {

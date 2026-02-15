@@ -3,9 +3,11 @@ import { ShieldedMerchantSDK } from './merchant.js';
 import { createLocalWithdrawalSigner } from './withdrawalSigner.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { concatHex, keccak256, pad } from 'viem';
-
-const CHALLENGE_DOMAIN_HASH =
-  '0xe32e24a51c351093d339c0035177dc2da5c1b8b9563e414393edd75506dcc055' as const;
+import {
+  CRYPTO_SPEC,
+  buildPaymentSignatureHeader,
+  normalizeRequirement
+} from '@shielded-x402/shared-types';
 
 describe('ShieldedMerchantSDK', () => {
   it('issues challenge and rejects missing headers', async () => {
@@ -27,9 +29,7 @@ describe('ShieldedMerchantSDK', () => {
     const issued = sdk.issue402();
     expect(issued.requirement.rail).toBe('shielded-usdc');
 
-    const result = await sdk.verifyShieldedPayment(null, null, {
-      challengeNonce: issued.requirement.challengeNonce
-    });
+    const result = await sdk.verifyShieldedPayment(null);
     expect(result.ok).toBe(false);
   });
 
@@ -75,10 +75,16 @@ describe('ShieldedMerchantSDK', () => {
       encryptedReceipt: '0x'
     };
 
-    const signature = await account.signMessage({ message: JSON.stringify(payload) });
-    const result = await sdk.verifyShieldedPayment(JSON.stringify(payload), signature, {
-      challengeNonce: issued.requirement.challengeNonce
+    const raw = JSON.stringify(payload);
+    const signature = await account.signMessage({ message: raw });
+    const paymentSignatureHeader = buildPaymentSignatureHeader({
+      x402Version: 2,
+      accepted: normalizeRequirement(issued.requirement),
+      payload,
+      challengeNonce: issued.requirement.challengeNonce as `0x${string}`,
+      signature
     });
+    const result = await sdk.verifyShieldedPayment(paymentSignatureHeader);
 
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('challenge hash mismatch');
@@ -110,7 +116,7 @@ describe('ShieldedMerchantSDK', () => {
     const amountWord = (`0x${(10n).toString(16).padStart(64, '0')}` as `0x${string}`);
     const challengeHash = keccak256(
       concatHex([
-        CHALLENGE_DOMAIN_HASH,
+        CRYPTO_SPEC.challengeDomainHash,
         issued.requirement.challengeNonce as `0x${string}`,
         amountWord,
         pad('0x0000000000000000000000000000000000000002', { size: 32 })
@@ -139,15 +145,18 @@ describe('ShieldedMerchantSDK', () => {
 
     const raw = JSON.stringify(payload);
     const signature = await account.signMessage({ message: raw });
-    const first = await sdk.verifyShieldedPayment(raw, signature, {
-      challengeNonce: issued.requirement.challengeNonce
+    const paymentSignatureHeader = buildPaymentSignatureHeader({
+      x402Version: 2,
+      accepted: normalizeRequirement(issued.requirement),
+      payload,
+      challengeNonce: issued.requirement.challengeNonce as `0x${string}`,
+      signature
     });
+    const first = await sdk.verifyShieldedPayment(paymentSignatureHeader);
     expect(first.ok).toBe(true);
 
     seen.add(payload.nullifier);
-    const second = await sdk.verifyShieldedPayment(raw, signature, {
-      challengeNonce: issued.requirement.challengeNonce
-    });
+    const second = await sdk.verifyShieldedPayment(paymentSignatureHeader);
     expect(second.ok).toBe(false);
   });
 

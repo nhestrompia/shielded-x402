@@ -9,6 +9,7 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 - `/shielded-402/sdk/client` - Client payment SDK and note encryption.
 - `/shielded-402/sdk/merchant` - Merchant challenge/verification + withdrawal signing.
 - `/shielded-402/services/merchant-gateway` - Express middleware/service.
+- `/shielded-402/services/payment-relayer` - Relayer that verifies agent-generated proofs, settles onchain, and executes merchant payout adapter.
 - `/shielded-402/packages/shared-types` - Shared payload and crypto constants.
 - `/shielded-402/packages/erc8004-adapter` - Feature-flagged ERC-8004 adapter.
 - `/shielded-402/examples/demo-api` - End-to-end demo client.
@@ -30,8 +31,9 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 
 ## Demo flow
 
-1. Start gateway: `pnpm --filter @shielded-x402/merchant-gateway dev`
-2. Run client demo: `pnpm --filter @shielded-x402/demo-api demo`
+1. Start relayer: `pnpm relayer:dev`
+2. Start merchant endpoint (existing x402-compatible merchant or local gateway): `pnpm --filter @shielded-x402/merchant-gateway dev`
+3. Run client demo: `pnpm --filter @shielded-x402/demo-api demo`
 
 ## Agent Plug-and-Play (NoirJS)
 
@@ -39,43 +41,58 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 - For a single-call integration, use `createShieldedFetch(...)` and replace direct `fetch` calls.
 - See `shielded-402/docs/sdk.md` for setup snippet.
 
+## Agent Prerequisite (Deposit First)
+
+- Agent must first deposit into `ShieldedPool` and hold a spendable shielded note.
+- Agent must maintain note + Merkle witness state (via local indexer/state store).
+- No deposit/note state means payment proof cannot be settled onchain.
+
 ## High-Level Flow
 
 ```text
-+---------------------+
-|      Agent App      |
-|  uses shieldedFetch |
-+---------------------+
++---------------------------+
+| Agent App / Agent SDK     |
+| (proof generated locally) |
++---------------------------+
            |
+           | 1) GET /paid/data
            v
-+---------------------+        402 challenge        +----------------------+
-|   Merchant Gateway  | <-------------------------- | Initial API request  |
-|   x402 middleware   | --------------------------> | from agent           |
-+---------------------+                             +----------------------+
++-------------------------------+
+| Merchant Endpoint (unchanged) |
+| returns standard x402 402     |
++-------------------------------+
            |
+           | 2) PAYMENT-REQUIRED (base64, x402Version=2)
            v
-+-------------------------------------------------------------+
-| Agent-side SDK (local)                                      |
-| - buildSpendProofWithProvider()                             |
-| - NoirJS + bb.js generates ZK proof                         |
-| - signs PAYMENT-RESPONSE                                    |
-+-------------------------------------------------------------+
++---------------------------+
+| Agent SDK signs payload   |
+| PAYMENT-SIGNATURE only    |
++---------------------------+
            |
+           | 3) POST /v1/relay/pay
            v
-+------------------------------+
-| Retry API call with headers  |
-| PAYMENT-RESPONSE             |
-| PAYMENT-SIGNATURE            |
-+------------------------------+
++--------------------------------------+
+| Payment Relayer                      |
+| - refetch challenge                  |
+| - verify proof + bindings            |
+| - enforce idempotency/state machine  |
++--------------------------------------+
            |
+           | 4) submitSpend(...)
            v
-+--------------------------------------------------+
-| Merchant verification                            |
-| - verify proof                                   |
-| - check root/nullifier onchain                   |
-| - call ShieldedPool.submitSpend(...)             |
-+--------------------------------------------------+
++-------------------------------+
+| ShieldedPool + UltraVerifier  |
+| onchain settlement + nullifier|
++-------------------------------+
            |
+           | 5) payout adapter call
+           v
++-------------------------------+
+| Merchant Endpoint (normal x402|
+| payout path, unchanged)       |
++-------------------------------+
+           |
+           | 6) proxied merchant response
            v
 +----------------------+
 | 200 OK to agent      |
@@ -89,6 +106,8 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 2. Set `SEPOLIA_RPC_URL`, `DEPLOYER_PRIVATE_KEY`, `USDC_ADDRESS`
 3. Generate verifier: `pnpm circuit:verifier`
 4. Deploy verifier + adapter + pool: `pnpm deploy:sepolia`
+5. Set relayer env: `RELAYER_RPC_URL`, `SHIELDED_POOL_ADDRESS`, `ULTRA_VERIFIER_ADDRESS`, `RELAYER_PRIVATE_KEY`
+6. Start relayer: `pnpm relayer:dev`
 
 ## Live integration test
 
@@ -108,6 +127,7 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 
 - Agent integration/testing guide: `/shielded-402/docs/agents-guide.md`
 - Full testing playbook (Anvil + Sepolia): `/shielded-402/docs/testing-playbook.md`
+- Relayer internals and safeguards: `/shielded-402/docs/relayer-architecture.md`
 
 ## npm distribution
 

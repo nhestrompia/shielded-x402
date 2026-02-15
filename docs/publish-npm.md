@@ -28,8 +28,16 @@ pnpm --filter @shielded-x402/client pack
 ```bash
 npm login
 
-pnpm --filter @shielded-x402/shared-types publish --access public --no-git-checks
-pnpm --filter @shielded-x402/client publish --access public --no-git-checks
+cd packages/shared-types && npm publish . --access public
+cd ../../sdk/client && npm publish . --access public
+```
+
+If `pnpm publish` throws `npm ERR! code EUSAGE` on Node 24 / npm 11, use the `npm publish .` commands above (they are the canonical fallback).
+
+If npm throws cache permission errors (`EPERM` under `~/.npm/_cacache`), fix once:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" ~/.npm
 ```
 
 ## Version Bump
@@ -37,11 +45,13 @@ pnpm --filter @shielded-x402/client publish --access public --no-git-checks
 Bump versions before publishing:
 
 ```bash
-pnpm --filter @shielded-x402/shared-types version <new-version>
-pnpm --filter @shielded-x402/client version <new-version>
+cd packages/shared-types && npm version <new-version> --no-git-tag-version
+cd ../../sdk/client && npm version <new-version> --no-git-tag-version
 ```
 
 Then run `pnpm install` to refresh workspace lockfile.
+
+If this release contains wire-format breaking changes, bump minor/major (for example `0.2.0`).
 
 ## Consumer Install
 

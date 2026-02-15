@@ -5,7 +5,7 @@
 - Monorepo scaffold with Foundry + TypeScript + Noir layout.
 - ShieldedPool contract with deposit, submitSpend, root history, nullifier registry.
 - Noir spend/change circuit scaffold.
-- Merchant gateway middleware with strict retry headers (`PAYMENT-RESPONSE`, `PAYMENT-SIGNATURE`).
+- Merchant gateway middleware with strict x402 v2 headers (`PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`).
 - Client SDK implementing `deposit`, `buildSpendProof`, `pay402`, `fetchWithShieldedPayment`.
 
 ## v1 (implemented)

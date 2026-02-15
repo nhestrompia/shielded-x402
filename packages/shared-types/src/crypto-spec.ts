@@ -1,12 +1,13 @@
 export const CRYPTO_SPEC = {
   version: 'v0.1.0',
   hashFunction: 'keccak256',
-  merkleTreeDepth: 32,
+  merkleTreeDepth: 24,
   noteEncoding: 'abi-packed-v1',
   nullifierDerivation: 'keccak256(nullifierSecret, noteCommitment)',
   merchantCommitmentDerivation: 'keccak256(payAmount, merchantRho, merchantPkHash)',
   changeCommitmentDerivation: 'keccak256(changeAmount, changeRho, changePkHash)',
   challengeDomainSeparator: 'shielded-x402:v1:challenge',
+  challengeDomainHash: '0xe32e24a51c351093d339c0035177dc2da5c1b8b9563e414393edd75506dcc055',
   commitmentDomainSeparator: 'shielded-x402:v1:commitment',
   outputDomainSeparator: 'shielded-x402:v1:output',
   nullifierDomainSeparator: 'shielded-x402:v1:nullifier'

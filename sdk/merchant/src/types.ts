@@ -3,6 +3,9 @@ import type { Hex, PaymentRequirement, ShieldedPaymentResponse } from '@shielded
 export interface MerchantConfig {
   rail: 'shielded-usdc';
   price: bigint;
+  network?: string;
+  asset?: Hex;
+  payTo?: Hex;
   merchantSignerAddress?: Hex;
   merchantPubKey: Hex;
   verifyingContract: Hex;
@@ -10,10 +13,6 @@ export interface MerchantConfig {
   fixedChallengeNonce?: Hex;
   withdrawalTtlSec?: number;
   now?: () => number;
-}
-
-export interface VerifyContext {
-  challengeNonce: string;
 }
 
 export interface VerifyResult {

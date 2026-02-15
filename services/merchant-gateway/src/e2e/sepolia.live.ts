@@ -1,39 +1,38 @@
 import {
   X402_HEADERS,
-  type ShieldedPaymentResponse,
-} from "@shielded-x402/shared-types";
-import { readFile } from "node:fs/promises";
-import { createPublicClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { sepolia } from "viem/chains";
+  buildPaymentSignatureHeader,
+  normalizeRequirement,
+  parsePaymentRequiredHeader,
+  type ShieldedPaymentResponse
+} from '@shielded-x402/shared-types';
+import { readFile } from 'node:fs/promises';
+import { createPublicClient, http } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { sepolia } from 'viem/chains';
 
 const poolAbi = [
   {
-    type: "function",
-    name: "latestRoot",
-    stateMutability: "view",
+    type: 'function',
+    name: 'latestRoot',
+    stateMutability: 'view',
     inputs: [],
-    outputs: [{ name: "", type: "bytes32" }],
-  },
+    outputs: [{ name: '', type: 'bytes32' }]
+  }
 ] as const;
 
 async function main(): Promise<void> {
   const gatewayUrl = process.env.E2E_GATEWAY_URL;
   const rpcUrl = process.env.SEPOLIA_RPC_URL;
-  const poolAddress = process.env.SHIELDED_POOL_ADDRESS as
-    | `0x${string}`
-    | undefined;
-  const payerPrivateKey = process.env.E2E_PAYER_PRIVATE_KEY as
-    | `0x${string}`
-    | undefined;
+  const poolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined;
+  const payerPrivateKey = process.env.E2E_PAYER_PRIVATE_KEY as `0x${string}` | undefined;
   const fixedNonce = process.env.FIXED_CHALLENGE_NONCE;
   const fixtureFile =
     process.env.E2E_PAYMENT_RESPONSE_FILE ??
-    "/shielded-402/ops/fixtures/sepolia-payment-response.json";
+    '/shielded-402/ops/fixtures/sepolia-payment-response.json';
 
   if (!gatewayUrl || !rpcUrl || !poolAddress || !payerPrivateKey) {
     throw new Error(
-      "Missing E2E env: E2E_GATEWAY_URL, SEPOLIA_RPC_URL, SHIELDED_POOL_ADDRESS, E2E_PAYER_PRIVATE_KEY",
+      'Missing E2E env: E2E_GATEWAY_URL, SEPOLIA_RPC_URL, SHIELDED_POOL_ADDRESS, E2E_PAYER_PRIVATE_KEY'
     );
   }
 
@@ -41,51 +40,49 @@ async function main(): Promise<void> {
 
   const client = createPublicClient({
     chain: sepolia,
-    transport: http(rpcUrl),
+    transport: http(rpcUrl)
   });
   const latestRoot = await client.readContract({
     address: poolAddress,
     abi: poolAbi,
-    functionName: "latestRoot",
+    functionName: 'latestRoot'
   });
-  if (!latestRoot.startsWith("0x")) {
-    throw new Error("invalid latestRoot response from chain");
+  if (!latestRoot.startsWith('0x')) {
+    throw new Error('invalid latestRoot response from chain');
   }
 
-  const first = await fetch(`${gatewayUrl.replace(/\/$/, "")}/paid/data`);
+  const first = await fetch(`${gatewayUrl.replace(/\/$/, '')}/paid/data`);
   if (first.status !== 402) {
     throw new Error(`expected first status 402, got ${first.status}`);
   }
 
-  const requirementHeader = first.headers.get(X402_HEADERS.paymentRequirement);
+  const requirementHeader = first.headers.get(X402_HEADERS.paymentRequired);
   if (!requirementHeader) {
-    throw new Error(`missing ${X402_HEADERS.paymentRequirement} header`);
+    throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
   }
-  const requirement = JSON.parse(requirementHeader) as {
-    challengeNonce: string;
-  };
+  const requirement = parsePaymentRequiredHeader(requirementHeader);
 
-  if (
-    fixedNonce &&
-    requirement.challengeNonce.toLowerCase() !== fixedNonce.toLowerCase()
-  ) {
-    throw new Error(
-      "challenge nonce mismatch; set FIXED_CHALLENGE_NONCE to fixture nonce",
-    );
+  if (fixedNonce && requirement.challengeNonce.toLowerCase() !== fixedNonce.toLowerCase()) {
+    throw new Error('challenge nonce mismatch; set FIXED_CHALLENGE_NONCE to fixture nonce');
   }
 
-  const fixtureRaw = await readFile(fixtureFile, "utf8");
+  const fixtureRaw = await readFile(fixtureFile, 'utf8');
   const paymentResponse = JSON.parse(fixtureRaw) as ShieldedPaymentResponse;
   const payload = JSON.stringify(paymentResponse);
   const signature = await account.signMessage({ message: payload });
+  const paymentSignatureHeader = buildPaymentSignatureHeader({
+    x402Version: 2,
+    accepted: normalizeRequirement(requirement),
+    payload: paymentResponse,
+    challengeNonce: requirement.challengeNonce as `0x${string}`,
+    signature
+  });
 
-  const retry = await fetch(`${gatewayUrl.replace(/\/$/, "")}/paid/data`, {
-    method: "GET",
+  const retry = await fetch(`${gatewayUrl.replace(/\/$/, '')}/paid/data`, {
+    method: 'GET',
     headers: {
-      [X402_HEADERS.paymentResponse]: payload,
-      [X402_HEADERS.paymentSignature]: signature,
-      [X402_HEADERS.challengeNonce]: requirement.challengeNonce,
-    },
+      [X402_HEADERS.paymentSignature]: paymentSignatureHeader
+    }
   });
 
   if (retry.status !== 200) {
@@ -95,10 +92,10 @@ async function main(): Promise<void> {
 
   const body = await retry.json();
   if (!body.ok) {
-    throw new Error("paid response body missing ok=true");
+    throw new Error('paid response body missing ok=true');
   }
 
-  console.log("live e2e passed");
+  console.log('live e2e passed');
 }
 
 main().catch((error) => {
