@@ -10,3 +10,7 @@ contracts/lib
 .env.*
 !.env.example
 .ci-artifacts
+
+.npm-cache
+
+*.tgz

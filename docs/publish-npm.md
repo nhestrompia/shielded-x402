@@ -28,11 +28,28 @@ pnpm --filter @shielded-x402/client pack
 ```bash
 npm login
 
-cd packages/shared-types && npm publish . --access public
-cd ../../sdk/client && npm publish . --access public
+pnpm publish:packages
 ```
 
-If `pnpm publish` throws `npm ERR! code EUSAGE` on Node 24 / npm 11, use the `npm publish .` commands above (they are the canonical fallback).
+This command:
+
+1. builds `@shielded-x402/shared-types` and `@shielded-x402/client`
+2. packs both with `pnpm pack` (workspace deps are rewritten to semver)
+3. publishes tarballs with `npm publish <tarball>`
+
+Dry-run:
+
+```bash
+pnpm publish:packages:dry-run
+```
+
+Optional env overrides:
+
+```bash
+NPM_TAG=next pnpm publish:packages
+NPM_ACCESS=public pnpm publish:packages
+NPM_CACHE_DIR=/tmp/shielded-x402-npm-cache pnpm publish:packages
+```
 
 If npm throws cache permission errors (`EPERM` under `~/.npm/_cacache`), fix once:
 

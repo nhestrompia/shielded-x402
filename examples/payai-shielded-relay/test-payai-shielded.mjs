@@ -1,0 +1,142 @@
+import 'dotenv/config';
+import {
+  FileBackedWalletState,
+  ShieldedClientSDK,
+  createNoirJsProofProviderFromDefaultCircuit,
+  createShieldedFetch,
+  deriveCommitment
+} from '@shielded-x402/client';
+import { privateKeyToAccount } from 'viem/accounts';
+
+const toWord = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
+const parseEnvBigInt = (key, fallback) => {
+  const raw = process.env[key];
+  if (!raw || raw.trim() === '') return fallback;
+  return BigInt(raw);
+};
+const parseEnvBoolean = (key, fallback) => {
+  const raw = process.env[key];
+  if (!raw || raw.trim() === '') return fallback;
+  return raw.trim().toLowerCase() === 'true';
+};
+
+const relayerEndpoint = process.env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
+const payaiUrl = process.env.PAYAI_URL ?? 'https://x402.payai.network/api/base-sepolia/paid-content';
+const poolRpcUrl = process.env.POOL_RPC_URL ?? process.env.SEPOLIA_RPC_URL;
+const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS;
+const walletStatePath = process.env.WALLET_STATE_PATH ?? './wallet-state.json';
+const poolStartBlock = parseEnvBigInt('POOL_FROM_BLOCK', 0n);
+const walletSyncChunkSize = parseEnvBigInt('WALLET_SYNC_CHUNK_SIZE', 10n);
+const walletSyncOnStart = parseEnvBoolean('WALLET_SYNC_ON_START', false);
+const payerPrivateKey = process.env.PAYER_PRIVATE_KEY;
+const noteAmount = parseEnvBigInt('NOTE_AMOUNT', 1000000n);
+const noteRho = toWord(parseEnvBigInt('NOTE_RHO', 42n));
+const notePkHash = toWord(parseEnvBigInt('NOTE_PK_HASH', 11n));
+const payerPkHash = toWord(parseEnvBigInt('PAYER_PK_HASH', 9n));
+
+if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
+  throw new Error('Set PAYER_PRIVATE_KEY in .env');
+}
+if (!poolRpcUrl) {
+  throw new Error('Set POOL_RPC_URL (or SEPOLIA_RPC_URL) in .env');
+}
+if (!shieldedPoolAddress || !shieldedPoolAddress.startsWith('0x')) {
+  throw new Error('Set SHIELDED_POOL_ADDRESS in .env');
+}
+
+const account = privateKeyToAccount(payerPrivateKey);
+const sdk = new ShieldedClientSDK({
+  endpoint: relayerEndpoint,
+  signer: (message) => account.signMessage({ message }),
+  proofProvider: await createNoirJsProofProviderFromDefaultCircuit()
+});
+
+const note = {
+  amount: noteAmount,
+  rho: noteRho,
+  pkHash: notePkHash,
+  commitment: deriveCommitment(noteAmount, noteRho, notePkHash),
+  leafIndex: -1
+};
+
+const walletState = await FileBackedWalletState.create({
+  filePath: walletStatePath,
+  rpcUrl: poolRpcUrl,
+  shieldedPoolAddress,
+  startBlock: poolStartBlock,
+  confirmations: 2n,
+  chunkSize: walletSyncChunkSize
+});
+
+await walletState.addOrUpdateNote(note);
+let syncResult;
+let resolvedContext;
+
+const resolveWalletContext = async (forceSync) => {
+  if (!forceSync) {
+    try {
+      return walletState.getSpendContextByCommitment(note.commitment, payerPkHash);
+    } catch {}
+  }
+
+  syncResult = await walletState.sync();
+  return walletState.getSpendContextByCommitment(note.commitment, payerPkHash);
+};
+
+resolvedContext = await resolveWalletContext(walletSyncOnStart);
+
+const shieldedFetch = createShieldedFetch({
+  sdk,
+  relayerEndpoint,
+  onRelayerSettlement: async ({ relayResponse, prepared }) => {
+    await walletState.applyRelayerSettlement({
+      settlementDelta: relayResponse.settlementDelta,
+      changeNote: prepared.changeNote
+    });
+  },
+  resolveContext: async ({ requirement }) => {
+    const requiredAmount = BigInt(requirement.amount);
+    if (note.amount < requiredAmount) {
+      throw new Error(
+        [
+          'insufficient note amount for merchant price',
+          `note.amount=${note.amount.toString()}`,
+          `requirement.amount=${requiredAmount.toString()}`,
+          'Set NOTE_AMOUNT >= requirement.amount and deposit that note commitment to the pool before retrying.'
+        ].join(' | ')
+      );
+    }
+    return resolvedContext;
+  }
+});
+console.log(`[1/2] Calling existing x402 merchant endpoint: ${payaiUrl}`);
+console.log(
+  [
+    `[config] noteAmount=${note.amount.toString()}`,
+    `commitment=${note.commitment}`,
+    `payerPkHash=${payerPkHash}`,
+    `leafIndex=${resolvedContext.note.leafIndex}`,
+    `witnessMode=wallet-state`,
+    `statePath=${walletStatePath}`,
+    `syncMode=${syncResult ? 'synced' : 'cached'}`,
+    ...(syncResult
+      ? [
+          `syncedFrom=${syncResult.fromBlock.toString()}`,
+          `syncedTo=${syncResult.toBlock.toString()}`,
+          `depositsApplied=${syncResult.depositsApplied}`,
+          `spendsApplied=${syncResult.spendsApplied}`
+        ]
+      : [])
+  ].join(' ')
+);
+
+const startedAt = Date.now();
+const response = await shieldedFetch(payaiUrl, { method: 'GET' });
+const elapsed = Date.now() - startedAt;
+
+console.log(`[2/2] status=${response.status} (${elapsed}ms)`);
+console.log(`content-type=${response.headers.get('content-type') ?? 'unknown'}`);
+console.log(`x-relayer-settlement-id=${response.headers.get('x-relayer-settlement-id') ?? 'n/a'}`);
+console.log(`payment-required-header-present=${response.headers.has('payment-required')}`);
+const body = await response.text();
+console.log(body);

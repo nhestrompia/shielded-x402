@@ -11,6 +11,7 @@ export const X402_HEADERS = {
 } as const;
 
 export const RELAYER_ROUTES = {
+  challenge: '/v1/relay/challenge',
   pay: '/v1/relay/pay',
   statusPrefix: '/v1/relay/status'
 } as const;
@@ -53,15 +54,20 @@ export function buildPaymentRequiredHeader(requirement: PaymentRequirement): str
 }
 
 export function parsePaymentRequiredHeader(rawHeader: string): PaymentRequirement {
+  const envelope = parsePaymentRequiredEnvelope(rawHeader);
+  const accepted = envelope.accepts[0];
+  if (!accepted || typeof accepted !== 'object') {
+    throw new Error('x402 PAYMENT-REQUIRED has no accepted payment requirements');
+  }
+  return normalizeRequirement(accepted as unknown as PaymentRequirement);
+}
+
+export function parsePaymentRequiredEnvelope(rawHeader: string): X402PaymentRequired {
   const envelope = decodeX402Header<X402PaymentRequired>(rawHeader);
   if (envelope.x402Version !== 2) {
     throw new Error('unsupported x402 version in PAYMENT-REQUIRED');
   }
-  const accepted = envelope.accepts[0];
-  if (!accepted) {
-    throw new Error('x402 PAYMENT-REQUIRED has no accepted payment requirements');
-  }
-  return normalizeRequirement(accepted);
+  return envelope;
 }
 
 export function buildPaymentSignatureHeader(payload: X402PaymentSignaturePayload): string {
@@ -77,7 +83,7 @@ export function parsePaymentSignatureHeader(rawHeader: string): X402PaymentSigna
 }
 
 export function normalizeRequirement(requirement: PaymentRequirement): PaymentRequirement {
-  const extra = requirement.extra;
+  const extra = requirement.extra ?? undefined;
   const rail = requirement.rail ?? extra?.rail;
   const challengeNonce = requirement.challengeNonce ?? extra?.challengeNonce;
   const challengeExpiry = requirement.challengeExpiry ?? extra?.challengeExpiry;
@@ -97,6 +103,7 @@ export function normalizeRequirement(requirement: PaymentRequirement): PaymentRe
     merchantPubKey,
     verifyingContract,
     extra: {
+      ...(extra ?? {}),
       rail,
       challengeNonce,
       challengeExpiry,

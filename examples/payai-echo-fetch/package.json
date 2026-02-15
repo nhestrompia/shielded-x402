@@ -1,0 +1,15 @@
+{
+  "name": "payai-echo-fetch",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Example client calling PayAI x402 Echo on Base Sepolia",
+  "scripts": {
+    "start": "node test-payai.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "viem": "^2.45.3",
+    "x402-fetch": "^0.6.0"
+  }
+}

@@ -58,4 +58,5 @@ export interface Prepared402Payment {
   requirement: PaymentRequirement;
   headers: Headers;
   response: ShieldedPaymentResponse;
+  changeNote: ShieldedNote;
 }

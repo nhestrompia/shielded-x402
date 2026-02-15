@@ -12,6 +12,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CRYPTO_SPEC,
+  buildPaymentRequiredHeader,
   buildPaymentSignatureHeader,
   normalizeRequirement,
   type PaymentRequirement,
@@ -126,9 +127,14 @@ describe('payment relayer processor', () => {
       settleOnchain: vi.fn(async () => ({ alreadySettled: false, txHash: '0xabc' as Hex }))
     };
     const payout = {
-      payMerchant: vi.fn(async () => ({ status: 200, headers: {}, body: '{"ok":true}' }))
+      payMerchant: vi.fn(async () => ({
+        status: 200,
+        headers: {},
+        bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+      }))
     };
     const challengeFetcher = {
+      fetchRequirementHeader: vi.fn(async () => buildPaymentRequiredHeader(requirement)),
       fetchRequirement: vi.fn(async () => requirement)
     };
 
@@ -157,7 +163,11 @@ describe('payment relayer processor', () => {
       settleOnchain: vi.fn(async () => ({ alreadySettled: false, txHash: '0xabc' as Hex }))
     };
     const payout = {
-      payMerchant: vi.fn(async () => ({ status: 200, headers: {}, body: '{"ok":true}' }))
+      payMerchant: vi.fn(async () => ({
+        status: 200,
+        headers: {},
+        bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+      }))
     };
 
     const processor = createPaymentRelayerProcessor({
@@ -169,6 +179,7 @@ describe('payment relayer processor', () => {
       settlement,
       payout,
       challengeFetcher: {
+        fetchRequirementHeader: async () => buildPaymentRequiredHeader(requirement),
         fetchRequirement: async () => requirement
       }
     });
@@ -202,9 +213,14 @@ describe('payment relayer processor', () => {
       },
       settlement,
       payout: {
-        payMerchant: async () => ({ status: 200, headers: {}, body: '{"ok":true}' })
+        payMerchant: async () => ({
+          status: 200,
+          headers: {},
+          bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+        })
       },
       challengeFetcher: {
+        fetchRequirementHeader: async () => buildPaymentRequiredHeader(mismatch),
         fetchRequirement: async () => mismatch
       }
     });

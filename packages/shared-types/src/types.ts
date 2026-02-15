@@ -45,7 +45,7 @@ export interface PaymentRequirement {
   description?: string;
   mimeType?: string;
   outputSchema?: string;
-  extra?: {
+  extra?: Record<string, string> & {
     rail: 'shielded-usdc' | string;
     challengeNonce: string;
     challengeExpiry: string;
@@ -56,7 +56,7 @@ export interface PaymentRequirement {
 
 export interface X402PaymentRequired {
   x402Version: 2;
-  accepts: PaymentRequirement[];
+  accepts: Array<Record<string, unknown>>;
   error?: string;
 }
 
@@ -88,7 +88,7 @@ export interface RelayerMerchantRequest {
   url: string;
   method: string;
   headers?: Record<string, string>;
-  body?: string;
+  bodyBase64?: string;
   challengeUrl?: string;
 }
 
@@ -97,6 +97,17 @@ export interface RelayerPayRequest {
   requirement: PaymentRequirement;
   paymentSignatureHeader: string;
   idempotencyKey?: string;
+}
+
+export interface RelayerChallengeRequest {
+  merchantRequest: RelayerMerchantRequest;
+  merchantPaymentRequiredHeader?: string;
+}
+
+export interface RelayerChallengeResponse {
+  requirement: PaymentRequirement;
+  paymentRequiredHeader: string;
+  upstreamRequirementHash: Hex;
 }
 
 export type RelayerSettlementStatus =
@@ -111,8 +122,16 @@ export type RelayerSettlementStatus =
 export interface RelayerMerchantResult {
   status: number;
   headers: Record<string, string>;
-  body: string;
+  bodyBase64: string;
   payoutReference?: string;
+}
+
+export interface RelayerSettlementDelta {
+  merchantCommitment: Hex;
+  changeCommitment: Hex;
+  merchantLeafIndex?: number;
+  changeLeafIndex?: number;
+  newRoot?: Hex;
 }
 
 export interface RelayerPayResponse {
@@ -120,6 +139,7 @@ export interface RelayerPayResponse {
   status: RelayerSettlementStatus;
   nullifier: Hex;
   settlementTxHash?: Hex;
+  settlementDelta?: RelayerSettlementDelta;
   merchantResult?: RelayerMerchantResult;
   failureReason?: string;
 }

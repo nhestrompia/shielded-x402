@@ -57,3 +57,43 @@ This repo now uses strict x402 v2-style framing:
   }
 }
 ```
+
+## End-to-End Flow (Shielded Rail)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent (Client SDK)
+    participant M as Merchant API (x402)
+    participant R as Payment Relayer
+    participant P as ShieldedPool + Verifier
+
+    A->>M: Request protected endpoint
+    M-->>A: 402 + PAYMENT-REQUIRED
+    A->>A: Build proof and sign PAYMENT-SIGNATURE
+    A->>R: POST /v1/relay/pay
+    R->>M: Refetch requirement and validate challenge
+    M-->>R: PAYMENT-REQUIRED
+    R->>R: Verify proof, nullifier, and bindings
+    R->>P: submitSpend(...)
+    P-->>R: tx confirmed
+    R->>M: Forward original merchant request
+    M-->>R: Paid merchant response bytes
+    R-->>A: Same status, headers, and body
+```
+
+## Relayer Bridge Endpoint
+
+For existing non-shielded x402 merchants, client relayed mode uses:
+
+- `POST /v1/relay/challenge`
+
+Request:
+
+- merchant request metadata + original merchant `PAYMENT-REQUIRED` header
+
+Response:
+
+- shielded `PaymentRequirement` (`rail=shielded-usdc`) and corresponding `PAYMENT-REQUIRED` header
+
+This lets agents pay standard x402 merchants through shielded settlement without merchant-side code changes.

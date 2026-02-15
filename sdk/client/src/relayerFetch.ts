@@ -1,13 +1,18 @@
 import {
+  parsePaymentRequiredEnvelope,
+  parsePaymentRequiredHeader,
   RELAYER_ROUTES,
   X402_HEADERS,
   type Hex,
   type PaymentRequirement,
+  type RelayerChallengeRequest,
+  type RelayerChallengeResponse,
   type RelayerPayRequest,
   type RelayerPayResponse,
   type ShieldedNote
 } from '@shielded-x402/shared-types';
 import { ShieldedClientSDK } from './client.js';
+import type { Prepared402Payment } from './types.js';
 import type { MerkleWitness } from './merkle.js';
 
 export interface RelayedShieldedFetchContext {
@@ -34,9 +39,16 @@ export interface CreateRelayedShieldedFetchConfig {
   sdk: ShieldedClientSDK;
   relayerEndpoint: string;
   relayerPath?: string;
+  relayerChallengePath?: string;
   resolveContext: (args: ResolveRelayedContextArgs) => Promise<RelayedShieldedFetchContext>;
-  challengeUrlResolver?: (args: { input: string; requirement: PaymentRequirement }) => string | undefined;
+  challengeUrlResolver?: (args: { input: string; requirement?: PaymentRequirement }) => string | undefined;
   onUnsupportedRail?: (args: UnsupportedRelayedRailArgs) => Promise<Response>;
+  onSettlement?: (args: {
+    relayResponse: RelayerPayResponse;
+    prepared: Prepared402Payment;
+    context: RelayedShieldedFetchContext;
+    requirement: PaymentRequirement;
+  }) => Promise<void> | void;
   fetchImpl?: typeof fetch;
 }
 
@@ -57,11 +69,86 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
   return out;
 }
 
-function normalizeBody(body: BodyInit | null | undefined): string | undefined {
-  if (body === undefined || body === null) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof URLSearchParams) return body.toString();
-  throw new Error('relayed shielded fetch currently supports string/URLSearchParams request bodies only');
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function serializedToFetchInit(
+  method: string,
+  serialized: { headers: Record<string, string>; bodyBase64?: string }
+): RequestInit {
+  const init: RequestInit = {
+    method,
+    headers: serialized.headers
+  };
+  if (method !== 'GET' && method !== 'HEAD' && serialized.bodyBase64 !== undefined) {
+    init.body = Buffer.from(serialized.bodyBase64, 'base64');
+  }
+  return init;
+}
+
+async function requestShieldedRequirementFromRelayer(
+  baseFetch: typeof fetch,
+  relayerEndpoint: string,
+  relayerChallengePath: string,
+  merchantRequest: RelayerChallengeRequest['merchantRequest'],
+  merchantPaymentRequiredHeader: string
+): Promise<PaymentRequirement> {
+  const challengeRequest: RelayerChallengeRequest = {
+    merchantRequest,
+    merchantPaymentRequiredHeader
+  };
+
+  const response = await baseFetch(`${relayerEndpoint.replace(/\/$/, '')}${relayerChallengePath}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(challengeRequest)
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`relayer challenge request failed: ${response.status} ${body}`);
+  }
+
+  const payload = (await response.json()) as RelayerChallengeResponse;
+  if (payload.requirement) {
+    return payload.requirement;
+  }
+  if (payload.paymentRequiredHeader) {
+    return parsePaymentRequiredHeader(payload.paymentRequiredHeader);
+  }
+  throw new Error('relayer challenge response missing requirement');
+}
+
+async function serializeMerchantRequestBody(
+  method: string,
+  headers: HeadersInit | undefined,
+  body: BodyInit | null | undefined
+): Promise<{ headers: Record<string, string>; bodyBase64?: string }> {
+  const normalizedMethod = method.toUpperCase();
+  const supportsBody = normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD';
+  const requestInit: RequestInit = {
+    method: normalizedMethod
+  };
+  if (headers !== undefined) {
+    requestInit.headers = headers;
+  }
+  if (supportsBody && body !== undefined && body !== null) {
+    requestInit.body = body;
+  }
+  const request = new Request('http://relay.local', requestInit);
+
+  const serializedHeaders = headersToRecord(request.headers);
+  if (!supportsBody || body === undefined || body === null) {
+    return { headers: serializedHeaders };
+  }
+
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  return {
+    headers: serializedHeaders,
+    bodyBase64: bytesToBase64(bytes)
+  };
 }
 
 function toRelayResultResponse(relayResponse: RelayerPayResponse): Response {
@@ -77,7 +164,7 @@ function toRelayResultResponse(relayResponse: RelayerPayResponse): Response {
     });
   }
 
-  return new Response(relayResponse.merchantResult.body, {
+  return new Response(Buffer.from(relayResponse.merchantResult.bodyBase64, 'base64'), {
     status: relayResponse.merchantResult.status,
     headers: {
       ...relayResponse.merchantResult.headers,
@@ -89,39 +176,91 @@ function toRelayResultResponse(relayResponse: RelayerPayResponse): Response {
 export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchConfig): RelayedShieldedFetch {
   const baseFetch = config.fetchImpl ?? fetch;
   const relayerPath = config.relayerPath ?? RELAYER_ROUTES.pay;
+  const relayerChallengePath = config.relayerChallengePath ?? RELAYER_ROUTES.challenge;
 
   return async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const normalizedInput = normalizeInput(input);
     const requestInit: RequestInit = init ?? {};
+    const method = (requestInit.method ?? 'GET').toUpperCase();
+    const serializedRequest = await serializeMerchantRequestBody(
+      method,
+      requestInit.headers,
+      requestInit.body
+    );
+    const baseMerchantRequest = {
+      url: normalizedInput,
+      method,
+      headers: serializedRequest.headers,
+      ...(serializedRequest.bodyBase64 !== undefined
+        ? { bodyBase64: serializedRequest.bodyBase64 }
+        : {})
+    };
 
-    const first = await baseFetch(normalizedInput, requestInit);
+    const first = await baseFetch(normalizedInput, serializedToFetchInit(method, serializedRequest));
     if (first.status !== 402) return first;
+    const merchantRequiredHeader = first.headers.get(X402_HEADERS.paymentRequired);
+    if (!merchantRequiredHeader) {
+      throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
+    }
+    parsePaymentRequiredEnvelope(merchantRequiredHeader);
 
-    const parsed = config.sdk.parse402Response(first);
-    if (parsed.requirement.rail !== 'shielded-usdc') {
-      if (config.onUnsupportedRail) {
-        return config.onUnsupportedRail({
-          input: normalizedInput,
-          init: requestInit,
-          requirement: parsed.requirement,
-          challengeResponse: first
-        });
+    let requirement: PaymentRequirement;
+    let parsedRequirement: PaymentRequirement | undefined;
+    try {
+      parsedRequirement = config.sdk.parse402Response(first).requirement;
+    } catch {
+      parsedRequirement = undefined;
+    }
+
+    if (parsedRequirement?.rail === 'shielded-usdc') {
+      requirement = parsedRequirement;
+    } else {
+      const challengeUrl = config.challengeUrlResolver?.(
+        parsedRequirement
+          ? {
+              input: normalizedInput,
+              requirement: parsedRequirement
+            }
+          : {
+              input: normalizedInput
+            }
+      );
+      try {
+        requirement = await requestShieldedRequirementFromRelayer(
+          baseFetch,
+          config.relayerEndpoint,
+          relayerChallengePath,
+          {
+            ...baseMerchantRequest,
+            ...(challengeUrl ? { challengeUrl } : {})
+          },
+          merchantRequiredHeader
+        );
+      } catch (error) {
+        if (parsedRequirement && config.onUnsupportedRail) {
+          return config.onUnsupportedRail({
+            input: normalizedInput,
+            init: requestInit,
+            requirement: parsedRequirement,
+            challengeResponse: first
+          });
+        }
+        throw error;
       }
-      return first;
     }
 
     const context = await config.resolveContext({
       input: normalizedInput,
       init: requestInit,
-      requirement: parsed.requirement,
+      requirement,
       challengeResponse: first
     });
     const prepared = await config.sdk.prepare402Payment(
-      parsed.requirement,
+      requirement,
       context.note,
       context.witness,
       context.payerPkHash,
-      requestInit.headers
+      serializedRequest.headers
     );
 
     const paymentSignatureHeader = prepared.headers.get(X402_HEADERS.paymentSignature);
@@ -131,18 +270,14 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
 
     const challengeUrl = config.challengeUrlResolver?.({
       input: normalizedInput,
-      requirement: parsed.requirement
+      requirement
     });
-    const body = normalizeBody(requestInit.body);
     const relayRequest: RelayerPayRequest = {
       merchantRequest: {
-        url: normalizedInput,
-        method: requestInit.method ?? 'GET',
-        headers: headersToRecord(requestInit.headers),
-        ...(body !== undefined ? { body } : {}),
+        ...baseMerchantRequest,
         ...(challengeUrl ? { challengeUrl } : {})
       },
-      requirement: parsed.requirement,
+      requirement,
       paymentSignatureHeader
     };
 
@@ -155,6 +290,14 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
     });
 
     const relayPayload = (await relayerResponse.json()) as RelayerPayResponse;
+    if (config.onSettlement) {
+      await config.onSettlement({
+        relayResponse: relayPayload,
+        prepared,
+        context,
+        requirement
+      });
+    }
     return toRelayResultResponse(relayPayload);
   };
 }

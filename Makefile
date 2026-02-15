@@ -1,4 +1,4 @@
-.PHONY: doctor build test typecheck contracts-deps contracts-test circuit-check circuit-verifier circuit-fixture deploy-sepolia deploy-anvil-dummy deploy-sepolia-dummy-service sepolia-live anvil-live e2e-anvil
+.PHONY: doctor build test typecheck contracts-deps contracts-test circuit-check circuit-verifier circuit-fixture deploy-sepolia deploy-anvil-dummy deploy-sepolia-dummy-service sepolia-live anvil-live e2e-anvil publish-packages publish-packages-dry-run
 
 doctor:
 	pnpm doctor
@@ -44,3 +44,9 @@ anvil-live:
 
 e2e-anvil:
 	pnpm e2e:anvil
+
+publish-packages:
+	pnpm publish:packages
+
+publish-packages-dry-run:
+	pnpm publish:packages:dry-run

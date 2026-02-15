@@ -13,6 +13,8 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 - `/shielded-402/packages/shared-types` - Shared payload and crypto constants.
 - `/shielded-402/packages/erc8004-adapter` - Feature-flagged ERC-8004 adapter.
 - `/shielded-402/examples/demo-api` - End-to-end demo client.
+- `/shielded-402/examples/payai-echo-fetch` - Standard commercial x402 example against PayAI endpoint.
+- `/shielded-402/examples/payai-shielded-relay` - Shielded-to-relayer flow that pays PayAI via x402 payout mode.
 
 ## Quickstart
 
@@ -49,55 +51,26 @@ Monorepo for a privacy-preserving payment rail built with Noir + x402 + Solidity
 
 ## High-Level Flow
 
-```text
-+---------------------------+
-| Agent App / Agent SDK     |
-| (proof generated locally) |
-+---------------------------+
-           |
-           | 1) GET /paid/data
-           v
-+-------------------------------+
-| Merchant Endpoint (unchanged) |
-| returns standard x402 402     |
-+-------------------------------+
-           |
-           | 2) PAYMENT-REQUIRED (base64, x402Version=2)
-           v
-+---------------------------+
-| Agent SDK signs payload   |
-| PAYMENT-SIGNATURE only    |
-+---------------------------+
-           |
-           | 3) POST /v1/relay/pay
-           v
-+--------------------------------------+
-| Payment Relayer                      |
-| - refetch challenge                  |
-| - verify proof + bindings            |
-| - enforce idempotency/state machine  |
-+--------------------------------------+
-           |
-           | 4) submitSpend(...)
-           v
-+-------------------------------+
-| ShieldedPool + UltraVerifier  |
-| onchain settlement + nullifier|
-+-------------------------------+
-           |
-           | 5) payout adapter call
-           v
-+-------------------------------+
-| Merchant Endpoint (normal x402|
-| payout path, unchanged)       |
-+-------------------------------+
-           |
-           | 6) proxied merchant response
-           v
-+----------------------+
-| 200 OK to agent      |
-| paid resource access |
-+----------------------+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent (Client SDK)
+    participant M as Merchant API (x402)
+    participant R as Payment Relayer
+    participant P as ShieldedPool + Verifier
+
+    A->>M: Request protected endpoint
+    M-->>A: 402 + PAYMENT-REQUIRED
+    A->>A: Build proof and sign PAYMENT-SIGNATURE
+    A->>R: POST /v1/relay/pay
+    R->>M: Refetch requirement and compare challenge
+    M-->>R: PAYMENT-REQUIRED
+    R->>R: Verify proof, nullifier, challenge binding
+    R->>P: submitSpend(proof, public inputs)
+    P-->>R: Confirmed settlement tx
+    R->>M: Forward original merchant request
+    M-->>R: Paid response (json/image/video/file bytes)
+    R-->>A: Relay response with status + headers + body
 ```
 
 ## Sepolia deployment

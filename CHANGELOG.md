@@ -2,24 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.2.0 - 2026-02-15
-
-### Added
-- Strict x402 v2 wire envelope helpers in shared types.
-- Explicit agent deposit prerequisite docs for shielded settlement.
-- `LICENSE` file (MIT).
-
-### Changed
-- Switched to strict header flow:
-  - Challenge: `PAYMENT-REQUIRED`
-  - Retry: `PAYMENT-SIGNATURE`
-  - Removed request-side legacy use of `PAYMENT-RESPONSE`.
-- Removed legacy fallback parsing/headers across client, merchant, relayer, and gateway.
-- Bumped npm package versions:
-  - `@shielded-x402/shared-types` -> `0.2.0`
-  - `@shielded-x402/client` -> `0.2.0`
-- Updated docs to match strict v2-only flow.
+## 0.2.2 - 2026-02-15
 
 ### Fixed
-- Full workspace typecheck and tests passing after strict v2 migration.
-- CI Noir toolchain pin aligned with client peer dependency expectations.
+
+- `@shielded-x402/client` build now always refreshes `dist/circuits/spend_change.json` from `src/circuits/spend_change.json`.
+- Prevents stale published circuit ABI (32-depth) from drifting against current runtime Merkle depth (24).
+- Package build now cleans `dist` before emit for deterministic publish artifacts.
+- Bumped package versions:
+  - `@shielded-x402/shared-types` -> `0.2.2`
+  - `@shielded-x402/client` -> `0.2.2`
+
+## 0.2.1 - 2026-02-15
+
+### Fixed
+
+- Published `@shielded-x402/shared-types` now includes relayer bridge surface:
+  - `parsePaymentRequiredEnvelope`
+  - `RELAYER_ROUTES.challenge`
+  - `RelayerChallengeRequest` / `RelayerChallengeResponse`
+  - binary-safe relay payload fields (`bodyBase64`)
+- `@shielded-x402/client` now depends on `@shielded-x402/shared-types` via `workspace:^0.2.1` for correct monorepo linking and publish-time semver resolution.
+- `sdk/client` TypeScript config now resolves workspace shared-types APIs correctly during local builds.

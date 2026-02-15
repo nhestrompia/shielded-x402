@@ -1,0 +1,28 @@
+type ShieldedPool_Deposited {
+  id: ID!
+  commitment: String!
+  leafIndex: BigInt!
+  root: String!
+  amount: BigInt!
+}
+
+type ShieldedPool_Spent {
+  id: ID!
+  nullifier: String!
+  merchantCommitment: String!
+  changeCommitment: String!
+  amount: BigInt!
+  challengeHash: String!
+  merchantLeafIndex: BigInt!
+  changeLeafIndex: BigInt!
+  newRoot: String!
+}
+
+type ShieldedPool_Withdrawn {
+  id: ID!
+  merchant: String!
+  recipient: String!
+  amount: BigInt!
+  claimId: String!
+}
+

@@ -21,6 +21,7 @@ import type {
   SettlementRecord
 } from './types.js';
 import { requirementsMatch } from './challenge.js';
+import { merchantRequestHash, upstreamTermsHashFromHeader } from './bridge.js';
 
 function isHex(value: unknown): value is Hex {
   return typeof value === 'string' && /^0x[0-9a-fA-F]*$/.test(value);
@@ -67,13 +68,23 @@ interface ParsedPaymentArtifacts {
 function parsePaymentArtifacts(request: RelayerPayRequest): ParsedPaymentArtifacts {
   const signedEnvelope = parsePaymentSignatureHeader(request.paymentSignatureHeader);
   const payload = parsePayload(JSON.stringify(signedEnvelope.payload));
+  const acceptedRequirement = normalizeRequirement(signedEnvelope.accepted);
+  const signedNonce = signedEnvelope.challengeNonce as Hex;
+  if (acceptedRequirement.challengeNonce.toLowerCase() !== signedNonce.toLowerCase()) {
+    throw new Error('signed challenge nonce does not match accepted requirement');
+  }
   return {
     payload,
     signature: signedEnvelope.signature as Hex,
-    challengeNonce: signedEnvelope.challengeNonce as Hex,
-    acceptedRequirement: normalizeRequirement(signedEnvelope.accepted),
+    challengeNonce: signedNonce,
+    acceptedRequirement,
     signedPayloadJson: JSON.stringify(payload)
   };
+}
+
+function getExtraString(requirement: PaymentRequirement, key: string): string | undefined {
+  const value = requirement.extra?.[key];
+  return typeof value === 'string' ? value : undefined;
 }
 
 function deriveChallengeHash(requirement: PaymentRequirement, challengeNonce: Hex): Hex {
@@ -199,6 +210,10 @@ export function createPaymentRelayerProcessor(config: PaymentRelayerProcessorCon
         idempotencyKey,
         status: 'RECEIVED',
         nullifier: payload.nullifier,
+        settlementDelta: {
+          merchantCommitment: payload.merchantCommitment,
+          changeCommitment: payload.changeCommitment
+        },
         merchantRequest: request.merchantRequest,
         requirement: signedRequirement,
         createdAt,
@@ -207,21 +222,40 @@ export function createPaymentRelayerProcessor(config: PaymentRelayerProcessorCon
       await config.store.put(record);
 
       try {
-        const fetchedRequirement = await config.challengeFetcher.fetchRequirement(request.merchantRequest);
         if (!requirementsMatch(request.requirement, signedRequirement)) {
           throw new Error('request requirement mismatch');
         }
-        if (!requirementsMatch(signedRequirement, fetchedRequirement)) {
-          throw new Error('merchant challenge mismatch');
-        }
-        if (
-          artifacts.challengeNonce.toLowerCase() !==
-          (fetchedRequirement.challengeNonce as Hex).toLowerCase()
-        ) {
-          throw new Error('challenge nonce mismatch');
+
+        const upstreamTermsHash = getExtraString(signedRequirement, 'upstreamTermsHash');
+        const requestHash = getExtraString(signedRequirement, 'merchantRequestHash');
+
+        if (requestHash) {
+          const computedRequestHash = merchantRequestHash(request.merchantRequest);
+          if (computedRequestHash.toLowerCase() !== requestHash.toLowerCase()) {
+            throw new Error('merchant request hash mismatch');
+          }
         }
 
-        const expiry = Number(fetchedRequirement.challengeExpiry);
+        if (upstreamTermsHash) {
+          const fetchedHeader = await config.challengeFetcher.fetchRequirementHeader(request.merchantRequest);
+          const fetchedTermsHash = upstreamTermsHashFromHeader(fetchedHeader);
+          if (fetchedTermsHash.toLowerCase() !== upstreamTermsHash.toLowerCase()) {
+            throw new Error('merchant requirement terms mismatch');
+          }
+        } else {
+          const fetchedRequirement = await config.challengeFetcher.fetchRequirement(request.merchantRequest);
+          if (!requirementsMatch(signedRequirement, fetchedRequirement)) {
+            throw new Error('merchant challenge mismatch');
+          }
+          if (
+            artifacts.challengeNonce.toLowerCase() !==
+            (fetchedRequirement.challengeNonce as Hex).toLowerCase()
+          ) {
+            throw new Error('challenge nonce mismatch');
+          }
+        }
+
+        const expiry = Number(signedRequirement.challengeExpiry);
         if (!Number.isFinite(expiry) || now() > expiry) {
           throw new Error('challenge expired');
         }
@@ -231,7 +265,7 @@ export function createPaymentRelayerProcessor(config: PaymentRelayerProcessorCon
           artifacts.signature
         );
 
-        assertPayloadBindsToRequirement(payload, fetchedRequirement, artifacts.challengeNonce);
+        assertPayloadBindsToRequirement(payload, signedRequirement, artifacts.challengeNonce);
 
         const nullifierUsed = await config.verifier.isNullifierUsed(payload.nullifier);
         if (nullifierUsed) {
@@ -258,7 +292,18 @@ export function createPaymentRelayerProcessor(config: PaymentRelayerProcessorCon
           record,
           {
             status: 'CONFIRMED',
-            ...(settlement.txHash ? { settlementTxHash: settlement.txHash } : {})
+            ...(settlement.txHash ? { settlementTxHash: settlement.txHash } : {}),
+            settlementDelta: {
+              merchantCommitment: payload.merchantCommitment,
+              changeCommitment: payload.changeCommitment,
+              ...(settlement.merchantLeafIndex !== undefined
+                ? { merchantLeafIndex: settlement.merchantLeafIndex }
+                : {}),
+              ...(settlement.changeLeafIndex !== undefined
+                ? { changeLeafIndex: settlement.changeLeafIndex }
+                : {}),
+              ...(settlement.newRoot !== undefined ? { newRoot: settlement.newRoot } : {})
+            }
           },
           now()
         );
@@ -267,7 +312,7 @@ export function createPaymentRelayerProcessor(config: PaymentRelayerProcessorCon
         const merchantResult = await config.payout.payMerchant({
           settlementId,
           merchantRequest: request.merchantRequest,
-          requirement: fetchedRequirement,
+          requirement: signedRequirement,
           nullifier: payload.nullifier,
           ...(settlement.txHash ? { settlementTxHash: settlement.txHash } : {})
         });

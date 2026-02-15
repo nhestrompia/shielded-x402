@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=./node_modules/envio/evm.schema.json
+name: envio-indexer
+networks:
+- id: 84532
+  start_block: 0
+  contracts:
+  - name: ShieldedPool
+    address:
+    - 0x3F1179AE580c1a807E4ffB1C47800ed0D20baf4E
+    handler: src/EventHandlers.ts
+    events:
+    - event: Deposited(bytes32 indexed commitment, uint256 indexed leafIndex, bytes32 indexed root, uint256 amount)
+    - event: Spent(bytes32 indexed nullifier, bytes32 indexed merchantCommitment, bytes32 indexed changeCommitment, uint256 amount, bytes32 challengeHash, uint256 merchantLeafIndex, uint256 changeLeafIndex, bytes32 newRoot)
+    - event: Withdrawn(address indexed merchant, address indexed recipient, uint256 amount, bytes32 indexed claimId)
+unordered_multichain_mode: true
+preload_handlers: true

@@ -7,6 +7,10 @@ import {
 } from '@shielded-x402/shared-types';
 import { ShieldedClientSDK } from './client.js';
 import type { MerkleWitness } from './merkle.js';
+import {
+  createRelayedShieldedFetch,
+  type CreateRelayedShieldedFetchConfig
+} from './relayerFetch.js';
 
 export interface ShieldedFetchContext {
   note: ShieldedNote;
@@ -34,6 +38,10 @@ export interface CreateShieldedFetchConfig {
   onUnsupportedRail?: (args: UnsupportedRailArgs) => Promise<Response>;
   prefetchRequirement?: (args: { input: string; init: RequestInit }) => Promise<PaymentRequirement | null>;
   fetchImpl?: typeof fetch;
+  relayerEndpoint?: string;
+  relayerPath?: string;
+  challengeUrlResolver?: (args: { input: string; requirement?: PaymentRequirement }) => string | undefined;
+  onRelayerSettlement?: CreateRelayedShieldedFetchConfig['onSettlement'];
 }
 
 export type ShieldedFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -44,6 +52,30 @@ const normalizeInput = (input: string | URL): string => {
 };
 
 export function createShieldedFetch(config: CreateShieldedFetchConfig): ShieldedFetch {
+  if (config.relayerEndpoint) {
+    const relayedConfig: CreateRelayedShieldedFetchConfig = {
+      sdk: config.sdk,
+      relayerEndpoint: config.relayerEndpoint,
+      resolveContext: config.resolveContext
+    };
+    if (config.onUnsupportedRail) {
+      relayedConfig.onUnsupportedRail = config.onUnsupportedRail;
+    }
+    if (config.relayerPath) {
+      relayedConfig.relayerPath = config.relayerPath;
+    }
+    if (config.fetchImpl) {
+      relayedConfig.fetchImpl = config.fetchImpl;
+    }
+    if (config.challengeUrlResolver) {
+      relayedConfig.challengeUrlResolver = config.challengeUrlResolver;
+    }
+    if (config.onRelayerSettlement) {
+      relayedConfig.onSettlement = config.onRelayerSettlement;
+    }
+    return createRelayedShieldedFetch(relayedConfig);
+  }
+
   const baseFetch = config.fetchImpl ?? fetch;
   return async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const normalizedInput = normalizeInput(input);

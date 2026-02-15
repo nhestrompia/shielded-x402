@@ -31,7 +31,9 @@
     "e2e:anvil": "bash ops/e2e-anvil.sh",
     "relayer:dev": "pnpm --filter @shielded-x402/payment-relayer dev",
     "relayer:typecheck": "pnpm --filter @shielded-x402/payment-relayer typecheck",
-    "relayer:test": "pnpm --filter @shielded-x402/payment-relayer test"
+    "relayer:test": "pnpm --filter @shielded-x402/payment-relayer test",
+    "publish:packages": "bash scripts/publish-packages.sh",
+    "publish:packages:dry-run": "bash scripts/publish-packages.sh --dry-run"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

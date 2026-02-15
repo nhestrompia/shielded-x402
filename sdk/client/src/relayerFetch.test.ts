@@ -75,7 +75,7 @@ describe('createRelayedShieldedFetch', () => {
       merchantResult: {
         status: 200,
         headers: { 'content-type': 'application/json' },
-        body: '{"ok":true}'
+        bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
       }
     };
 
@@ -102,17 +102,24 @@ describe('createRelayedShieldedFetch', () => {
 
     const relayInit = relayCall?.[1] as RequestInit;
     const relayBody = JSON.parse(String(relayInit.body)) as {
-      merchantRequest: { challengeUrl?: string };
+      merchantRequest: { challengeUrl?: string; bodyBase64?: string };
       paymentSignatureHeader: string;
     };
     expect(relayBody.merchantRequest.challengeUrl).toBe('http://merchant.local/x402/requirement');
+    expect(relayBody.merchantRequest.bodyBase64).toBeUndefined();
     expect(relayBody.paymentSignatureHeader.length).toBeGreaterThan(10);
   });
 
-  it('falls back for unsupported rails', async () => {
+  it('bridges unsupported merchant rail through relayer challenge endpoint', async () => {
     const sdk = new ShieldedClientSDK({
       endpoint: 'http://merchant.local',
-      signer: async () => '0xsig'
+      signer: async () => '0xsig',
+      proofProvider: {
+        generateProof: async ({ expectedPublicInputs }) => ({
+          proof: '0x1234',
+          publicInputs: expectedPublicInputs
+        })
+      }
     });
 
     const merchantChallenge = new Response(null, {
@@ -125,7 +132,36 @@ describe('createRelayedShieldedFetch', () => {
       }
     });
 
-    const fetchImpl = vi.fn().mockResolvedValueOnce(merchantChallenge) as typeof fetch;
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(merchantChallenge)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requirement,
+            paymentRequiredHeader: buildPaymentRequiredHeader(requirement),
+            upstreamRequirementHash:
+              '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            settlementId: 'settle_bridge',
+            status: 'DONE',
+            nullifier:
+              '0x1111111111111111111111111111111111111111111111111111111111111111',
+            merchantResult: {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+              bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+            }
+          }),
+          { status: 200 }
+        )
+      ) as typeof fetch;
     const fallback = vi.fn(async () => new Response('fallback', { status: 409 }));
 
     const relayedFetch = createRelayedShieldedFetch({
@@ -137,9 +173,12 @@ describe('createRelayedShieldedFetch', () => {
     });
 
     const response = await relayedFetch('http://merchant.local/paid', { method: 'GET' });
-    expect(response.status).toBe(409);
-    expect(fallback).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('{"ok":true}');
+    expect(fallback).toHaveBeenCalledTimes(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/challenge');
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://relayer.local/v1/relay/pay');
   });
 
   it('returns relay failure details as 502 when merchant result is absent', async () => {
@@ -188,5 +227,116 @@ describe('createRelayedShieldedFetch', () => {
     expect(response.status).toBe(502);
     const body = await response.json();
     expect(body.status).toBe('FAILED');
+  });
+
+  it('preserves binary merchant response bytes from relayer result', async () => {
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://merchant.local',
+      signer: async () => '0xsig',
+      proofProvider: {
+        generateProof: async ({ expectedPublicInputs }) => ({
+          proof: '0x1234',
+          publicInputs: expectedPublicInputs
+        })
+      }
+    });
+
+    const merchantChallenge = new Response(null, {
+      status: 402,
+      headers: {
+        [X402_HEADERS.paymentRequired]: buildPaymentRequiredHeader(requirement)
+      }
+    });
+
+    const binary = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10, 0x7f]);
+    const relayerResult = {
+      settlementId: 'settle_bin',
+      status: 'DONE',
+      nullifier: '0x1111111111111111111111111111111111111111111111111111111111111111',
+      merchantResult: {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+        bodyBase64: Buffer.from(binary).toString('base64')
+      }
+    };
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(merchantChallenge)
+      .mockResolvedValueOnce(new Response(JSON.stringify(relayerResult), { status: 200 })) as typeof fetch;
+
+    const relayedFetch = createRelayedShieldedFetch({
+      sdk,
+      relayerEndpoint: 'http://relayer.local',
+      fetchImpl,
+      resolveContext: async () => buildContext()
+    });
+
+    const response = await relayedFetch('http://merchant.local/paid', { method: 'GET' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(Array.from(bytes)).toEqual(Array.from(binary));
+  });
+
+  it('serializes request bodies as base64 bytes for relay transport', async () => {
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://merchant.local',
+      signer: async () => '0xsig',
+      proofProvider: {
+        generateProof: async ({ expectedPublicInputs }) => ({
+          proof: '0x1234',
+          publicInputs: expectedPublicInputs
+        })
+      }
+    });
+
+    const merchantChallenge = new Response(null, {
+      status: 402,
+      headers: {
+        [X402_HEADERS.paymentRequired]: buildPaymentRequiredHeader(requirement)
+      }
+    });
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(merchantChallenge)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            settlementId: 'settle_req',
+            status: 'DONE',
+            nullifier:
+              '0x1111111111111111111111111111111111111111111111111111111111111111',
+            merchantResult: {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+              bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+            }
+          }),
+          { status: 200 }
+        )
+      ) as typeof fetch;
+
+    const relayedFetch = createRelayedShieldedFetch({
+      sdk,
+      relayerEndpoint: 'http://relayer.local',
+      fetchImpl,
+      resolveContext: async () => buildContext()
+    });
+
+    const requestBytes = Uint8Array.from([0x00, 0xff, 0x11, 0x22, 0x33, 0x44]);
+    await relayedFetch('http://merchant.local/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: requestBytes
+    });
+
+    const relayCall = fetchImpl.mock.calls[1];
+    const relayInit = relayCall?.[1] as RequestInit;
+    const relayBody = JSON.parse(String(relayInit.body)) as {
+      merchantRequest: { bodyBase64?: string };
+    };
+    expect(relayBody.merchantRequest.bodyBase64).toBe(Buffer.from(requestBytes).toString('base64'));
   });
 });

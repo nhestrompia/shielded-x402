@@ -197,7 +197,8 @@ export class ShieldedClientSDK {
     return {
       requirement,
       headers,
-      response: bundleWithProof.response
+      response: bundleWithProof.response,
+      changeNote: bundleWithProof.changeNote
     };
   }
 

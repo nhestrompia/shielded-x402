@@ -1,8 +1,17 @@
 import express from 'express';
-import { RELAYER_ROUTES, type RelayerPayRequest } from '@shielded-x402/shared-types';
+import {
+  RELAYER_ROUTES,
+  type RelayerChallengeRequest,
+  type RelayerPayRequest
+} from '@shielded-x402/shared-types';
 import { createChallengeFetcher } from './challenge.js';
+import { createShieldedChallengeBridge } from './bridge.js';
 import { createPaymentRelayerProcessor } from './processor.js';
-import { createForwardPayoutAdapter, createNoopPayoutAdapter } from './payout.js';
+import {
+  createForwardPayoutAdapter,
+  createNoopPayoutAdapter,
+  createX402PayoutAdapter
+} from './payout.js';
 import { createOnchainSettlement, createNoopSettlement } from './settlement.js';
 import { FileSettlementStore } from './store.js';
 import { createAllowAllVerifier, createOnchainVerifier } from './verifier.js';
@@ -34,6 +43,27 @@ const relayerPrivateKey =
 const storePath = process.env.RELAYER_STORE_PATH ?? '/tmp/shielded-x402-relayer-store.json';
 const payoutMode = process.env.RELAYER_PAYOUT_MODE ?? 'forward';
 const staticPayoutHeaders = parseStaticHeaders(process.env.RELAYER_PAYOUT_HEADERS_JSON);
+const relayerX402RpcUrl = process.env.RELAYER_X402_RPC_URL ?? process.env.BASE_SEPOLIA_RPC_URL;
+const relayerX402PrivateKey =
+  (process.env.RELAYER_X402_PRIVATE_KEY as `0x${string}` | undefined) ?? relayerPrivateKey;
+const relayerX402Chain = (process.env.RELAYER_X402_CHAIN ?? 'base-sepolia') as
+  | 'base-sepolia'
+  | 'sepolia';
+const relayerChallengeTtlMs = Number(process.env.RELAYER_CHALLENGE_TTL_MS ?? '180000');
+const relayerShieldedMerchantPubKey = (process.env.RELAYER_SHIELDED_MERCHANT_PUBKEY ??
+  process.env.MERCHANT_PUBKEY ??
+  '0x1111111111111111111111111111111111111111111111111111111111111111') as `0x${string}`;
+const relayerShieldedVerifyingContract = (process.env.RELAYER_SHIELDED_VERIFYING_CONTRACT ??
+  shieldedPoolAddress ??
+  '0x2222222222222222222222222222222222222222') as `0x${string}`;
+
+const challengeFetcher = createChallengeFetcher();
+const challengeBridge = createShieldedChallengeBridge({
+  challengeFetcher,
+  challengeTtlMs: relayerChallengeTtlMs,
+  merchantPubKey: relayerShieldedMerchantPubKey,
+  verifyingContract: relayerShieldedVerifyingContract
+});
 
 const verifier =
   rpcUrl && shieldedPoolAddress && ultraVerifierAddress
@@ -56,16 +86,30 @@ const settlement =
 const payout =
   payoutMode === 'noop'
     ? createNoopPayoutAdapter()
-    : createForwardPayoutAdapter({
-        staticHeaders: staticPayoutHeaders
-      });
+    : payoutMode === 'x402'
+      ? (() => {
+          if (!relayerX402RpcUrl || !relayerX402PrivateKey) {
+            throw new Error(
+              'RELAYER_PAYOUT_MODE=x402 requires RELAYER_X402_RPC_URL(or BASE_SEPOLIA_RPC_URL) and RELAYER_X402_PRIVATE_KEY(or RELAYER_PRIVATE_KEY)'
+            );
+          }
+          return createX402PayoutAdapter({
+            rpcUrl: relayerX402RpcUrl,
+            privateKey: relayerX402PrivateKey,
+            chain: relayerX402Chain,
+            staticHeaders: staticPayoutHeaders
+          });
+        })()
+      : createForwardPayoutAdapter({
+          staticHeaders: staticPayoutHeaders
+        });
 
 const processor = createPaymentRelayerProcessor({
   store: new FileSettlementStore(storePath),
   verifier,
   settlement,
   payout,
-  challengeFetcher: createChallengeFetcher()
+  challengeFetcher
 });
 
 app.get('/health', (_req, res) => {
@@ -74,8 +118,24 @@ app.get('/health', (_req, res) => {
     onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && ultraVerifierAddress),
     onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && relayerPrivateKey),
     payoutMode,
+    x402PayoutEnabled: payoutMode === 'x402',
+    challengeBridgeEnabled: true,
     storePath
   });
+});
+
+app.post(RELAYER_ROUTES.challenge, async (req, res) => {
+  try {
+    const challengeRequest = req.body as RelayerChallengeRequest;
+    const issued = await challengeBridge.issueChallenge(challengeRequest);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(issued);
+  } catch (error) {
+    res.status(400).json({
+      error: 'failed to issue shielded challenge',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
 });
 
 app.post(RELAYER_ROUTES.pay, async (req, res) => {

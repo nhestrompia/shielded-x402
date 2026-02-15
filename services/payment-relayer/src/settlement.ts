@@ -1,5 +1,5 @@
 import type { Hex, ShieldedPaymentResponse } from '@shielded-x402/shared-types';
-import { createPublicClient, createWalletClient, http } from 'viem';
+import { createPublicClient, createWalletClient, decodeEventLog, http, parseAbiItem } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { SettlementAdapter } from './types.js';
 
@@ -27,6 +27,10 @@ const shieldedPoolSettlementAbi = [
     outputs: []
   }
 ] as const;
+
+const spentEvent = parseAbiItem(
+  'event Spent(bytes32 indexed nullifier, bytes32 indexed merchantCommitment, bytes32 indexed changeCommitment, uint256 amount, bytes32 challengeHash, uint256 merchantLeafIndex, uint256 changeLeafIndex, bytes32 newRoot)'
+);
 
 export interface OnchainSettlementConfig {
   rpcUrl: string;
@@ -91,8 +95,39 @@ export function createOnchainSettlement(config: OnchainSettlementConfig): Settle
       if (receipt.status !== 'success') {
         throw new Error(`settlement tx reverted: ${txHash}`);
       }
+      let merchantLeafIndex: number | undefined;
+      let changeLeafIndex: number | undefined;
+      let newRoot: Hex | undefined;
 
-      return { alreadySettled: false, txHash };
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== config.shieldedPoolAddress.toLowerCase()) continue;
+        try {
+          const decoded = decodeEventLog({
+            abi: [spentEvent],
+            data: log.data,
+            topics: log.topics
+          });
+          if (decoded.eventName !== 'Spent') continue;
+          const args = decoded.args as {
+            merchantLeafIndex: bigint;
+            changeLeafIndex: bigint;
+            newRoot: Hex;
+          };
+          merchantLeafIndex = Number(args.merchantLeafIndex);
+          changeLeafIndex = Number(args.changeLeafIndex);
+          newRoot = args.newRoot;
+        } catch {
+          // Ignore non-Spent logs
+        }
+      }
+
+      return {
+        alreadySettled: false,
+        txHash,
+        ...(merchantLeafIndex !== undefined ? { merchantLeafIndex } : {}),
+        ...(changeLeafIndex !== undefined ? { changeLeafIndex } : {}),
+        ...(newRoot !== undefined ? { newRoot } : {})
+      };
     }
   };
 }

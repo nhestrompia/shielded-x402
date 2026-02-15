@@ -1,37 +1,49 @@
 import {
   X402_HEADERS,
+  parsePaymentRequiredEnvelope,
   parsePaymentRequiredHeader,
   type PaymentRequirement,
   type RelayerMerchantRequest
 } from '@shielded-x402/shared-types';
 import type { ChallengeFetcher } from './types.js';
 
-function parseRequirementFromResponse(response: Response): PaymentRequirement {
+function parseRequirementHeaderFromResponse(response: Response): string {
   const header = response.headers.get(X402_HEADERS.paymentRequired);
   if (!header) {
     throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
   }
-  return parsePaymentRequiredHeader(header);
+  parsePaymentRequiredEnvelope(header);
+  return header;
+}
+
+function parseRequirementFromResponse(response: Response): PaymentRequirement {
+  return parsePaymentRequiredHeader(parseRequirementHeaderFromResponse(response));
 }
 
 export function createChallengeFetcher(fetchImpl: typeof fetch = fetch): ChallengeFetcher {
+  const fetchRequirementHeader = async (merchantRequest: RelayerMerchantRequest): Promise<string> => {
+    const candidates = [merchantRequest.challengeUrl, merchantRequest.url].filter(
+      (value): value is string => Boolean(value)
+    );
+
+    for (const candidate of candidates) {
+      const response = await fetchImpl(candidate, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json'
+        }
+      });
+      return parseRequirementHeaderFromResponse(response);
+    }
+
+    throw new Error('unable to fetch merchant payment requirement');
+  };
+
   return {
+    fetchRequirementHeader,
     fetchRequirement: async (merchantRequest: RelayerMerchantRequest): Promise<PaymentRequirement> => {
-      const candidates = [merchantRequest.challengeUrl, merchantRequest.url].filter(
-        (value): value is string => Boolean(value)
-      );
-
-      for (const candidate of candidates) {
-        const response = await fetchImpl(candidate, {
-          method: 'GET',
-          headers: {
-            accept: 'application/json'
-          }
-        });
-        return parseRequirementFromResponse(response);
-      }
-
-      throw new Error('unable to fetch merchant payment requirement');
+      const header = await fetchRequirementHeader(merchantRequest);
+      return parsePaymentRequiredHeader(header);
     }
   };
 }

@@ -8,8 +8,10 @@
 - `pay402(shieldedPaymentResponse)`
 - `prepare402Payment(requirement, note, witness, payerPkHash, baseHeaders?)` (prebuild headers before request)
 - `fetchWithShieldedPayment(url, init, note, witness, payerPkHash)`
-- `createShieldedFetch({ sdk, resolveContext, fetchImpl?, onUnsupportedRail?, prefetchRequirement? })`
-- `createRelayedShieldedFetch({ sdk, relayerEndpoint, resolveContext, challengeUrlResolver?, onUnsupportedRail?, fetchImpl? })`
+- `createShieldedFetch({ sdk, resolveContext, fetchImpl?, onUnsupportedRail?, prefetchRequirement?, relayerEndpoint?, relayerPath?, challengeUrlResolver? })`
+- `createShieldedFetch({ ..., onRelayerSettlement? })` (hook for relayer settlement deltas)
+- `createRelayedShieldedFetch(...)` (low-level explicit relayer variant; `createShieldedFetch` is the preferred single entrypoint)
+- `FileBackedWalletState` (local persistent note + Merkle state indexer)
 - Optional in-process proving:
   - `createNoirJsProofProvider({ noir, backend })`
   - configure via `ShieldedClientConfig.proofProvider`
@@ -71,15 +73,15 @@ const response = await shieldedFetch("http://localhost:3000/paid/data", { method
 - shielded proof/signature generation
 - retry with `PAYMENT-SIGNATURE` header
 
-### No-Merchant-Change Integration (`createRelayedShieldedFetch`)
+### No-Merchant-Change Integration (Single Entry: `createShieldedFetch`)
 
-Use this wrapper when merchants remain standard x402 and a centralized relayer performs onchain settlement + payout.
+Use the same wrapper and add `relayerEndpoint` when merchants remain standard x402 and a centralized relayer performs onchain settlement + payout.
 
 ```ts
 import {
   ShieldedClientSDK,
   createNoirJsProofProviderFromDefaultCircuit,
-  createRelayedShieldedFetch
+  createShieldedFetch
 } from "@shielded-x402/client";
 
 const sdk = new ShieldedClientSDK({
@@ -88,7 +90,7 @@ const sdk = new ShieldedClientSDK({
   proofProvider: await createNoirJsProofProviderFromDefaultCircuit()
 });
 
-const relayedFetch = createRelayedShieldedFetch({
+const relayedFetch = createShieldedFetch({
   sdk,
   relayerEndpoint: "http://localhost:3100",
   challengeUrlResolver: ({ input }) => `${new URL(input).origin}/x402/requirement`,
@@ -102,11 +104,59 @@ const relayedFetch = createRelayedShieldedFetch({
 const response = await relayedFetch("http://merchant.example/paid/data", { method: "GET" });
 ```
 
-`createRelayedShieldedFetch` does:
+Relayed mode (`relayerEndpoint` set) does:
 - first request to merchant to obtain the 402 challenge
+- if merchant rail is not `shielded-usdc`, calls relayer bridge endpoint (`/v1/relay/challenge`) to mint a shielded requirement from merchant terms
 - local proof generation/signing on the agent
 - submits bundle to `/v1/relay/pay`
 - returns the relayer-mediated merchant response
+- relays request/response bodies as base64 bytes to avoid binary corruption (images/video/files)
+
+### Local Incremental Indexer (Recommended for Agents)
+
+Use `FileBackedWalletState` to persist note secrets + Merkle commitments and sync only new pool events.
+
+```ts
+import {
+  FileBackedWalletState,
+  ShieldedClientSDK,
+  createNoirJsProofProviderFromDefaultCircuit,
+  createShieldedFetch
+} from '@shielded-x402/client';
+
+const walletState = await FileBackedWalletState.create({
+  filePath: './agent-wallet-state.json',
+  rpcUrl: process.env.SEPOLIA_RPC_URL!,
+  shieldedPoolAddress: process.env.SHIELDED_POOL_ADDRESS as `0x${string}`,
+  startBlock: 37697000n,
+  confirmations: 2n,
+  chunkSize: 2000n
+});
+
+// After a deposit tx, persist note data once:
+await walletState.addOrUpdateNote(noteWithSecrets, depositBlockNumber);
+
+// Before each payment, cheap incremental sync:
+await walletState.sync();
+
+const shieldedFetch = createShieldedFetch({
+  sdk,
+  relayerEndpoint: process.env.RELAYER_ENDPOINT,
+  resolveContext: async () => walletState.getSpendContextByCommitment(noteWithSecrets.commitment, payerPkHash),
+  onRelayerSettlement: async ({ relayResponse, prepared }) => {
+    await walletState.applyRelayerSettlement({
+      settlementDelta: relayResponse.settlementDelta,
+      changeNote: prepared.changeNote
+    });
+  }
+});
+```
+
+Why this is better:
+- avoids expensive full-range log scans each request
+- keeps witness construction local for better privacy
+- updates a file after interactions, so next run resumes from `lastSyncedBlock`
+- writes settlement deltas automatically (new change note + leaf indexes) when relayer returns them
 
 Note encryption utilities:
 - `generateNoteEncryptionKeyPair()`

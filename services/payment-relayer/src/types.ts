@@ -37,7 +37,15 @@ export interface VerifierAdapter {
 }
 
 export interface SettlementAdapter {
-  settleOnchain: (payload: ShieldedPaymentResponse) => Promise<{ txHash?: Hex; alreadySettled: boolean }>;
+  settleOnchain: (
+    payload: ShieldedPaymentResponse
+  ) => Promise<{
+    txHash?: Hex;
+    alreadySettled: boolean;
+    merchantLeafIndex?: number;
+    changeLeafIndex?: number;
+    newRoot?: Hex;
+  }>;
 }
 
 export interface PayoutRequest {
@@ -53,6 +61,7 @@ export interface PayoutAdapter {
 }
 
 export interface ChallengeFetcher {
+  fetchRequirementHeader: (merchantRequest: RelayerMerchantRequest) => Promise<string>;
   fetchRequirement: (merchantRequest: RelayerMerchantRequest) => Promise<PaymentRequirement>;
 }
 

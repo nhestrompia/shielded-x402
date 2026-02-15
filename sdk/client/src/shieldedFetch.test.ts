@@ -166,4 +166,74 @@ describe('createShieldedFetch', () => {
     const firstHeaders = new Headers((fetchImpl.mock.calls[0] ?? [])[1]?.headers);
     expect(firstHeaders.has(X402_HEADERS.paymentSignature)).toBe(true);
   });
+
+  it('switches to relayed mode when relayerEndpoint is provided', async () => {
+    const note = {
+      amount: 100n,
+      rho: '0x0000000000000000000000000000000000000000000000000000000000000011',
+      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009',
+      commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
+      leafIndex: 0
+    } as const;
+    const witness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+      path: new Array<string>(MERKLE_DEPTH).fill(
+        '0x0000000000000000000000000000000000000000000000000000000000000000'
+      ) as Hex[],
+      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
+    };
+    const requirement = makeRequirement();
+
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://localhost:3000',
+      signer: async () => '0xsig',
+      proofProvider: {
+        generateProof: async ({ expectedPublicInputs }) => ({
+          proof: '0x1234',
+          publicInputs: expectedPublicInputs
+        })
+      }
+    });
+
+    const first = new Response(null, {
+      status: 402,
+      headers: {
+        [X402_HEADERS.paymentRequired]: buildPaymentRequiredHeader(requirement)
+      }
+    });
+
+    const relayerResult = new Response(
+      JSON.stringify({
+        settlementId: 'settle_abc',
+        status: 'DONE',
+        nullifier: '0x1111111111111111111111111111111111111111111111111111111111111111',
+        merchantResult: {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+        }
+      }),
+      { status: 200 }
+    );
+
+    const fetchImpl = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(relayerResult) as typeof fetch;
+
+    const shieldedFetch = createShieldedFetch({
+      sdk,
+      resolveContext: async () => ({
+        note,
+        witness,
+        payerPkHash: note.pkHash
+      }),
+      fetchImpl,
+      relayerEndpoint: 'http://relayer.local'
+    });
+
+    const response = await shieldedFetch('http://localhost:3000/paid/data', { method: 'GET' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('{"ok":true}');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/pay');
+  });
 });

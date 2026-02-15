@@ -1,4 +1,5 @@
 export * from './challenge.js';
+export * from './bridge.js';
 export * from './payout.js';
 export * from './processor.js';
 export * from './settlement.js';

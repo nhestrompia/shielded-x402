@@ -39,7 +39,8 @@ Use this decision rule:
 2. If status is not `402`, return response.
 3. Parse `PAYMENT-REQUIRED`.
 4. If `rail === "shielded-usdc"`, run shielded flow.
-5. Otherwise run your existing normal x402 flow.
+5. Otherwise, if using relayed mode (`createShieldedFetch({ relayerEndpoint })`), the SDK asks relayer to issue a shielded bridge challenge and continues shielded flow.
+6. If bridge is unavailable, run your existing normal x402 flow.
 
 This keeps compatibility with endpoints that may mix rails.
 
@@ -64,8 +65,9 @@ Without this deposit+note state, proof generation will succeed structurally but 
    - `verifyingContract`
 2. Build witness from local note/Merkle state.
 3. Call client SDK:
-   - preferred: `createRelayedShieldedFetch(...)` and call that wrapper instead of raw `fetch`
-   - direct merchant mode: `createShieldedFetch(...)`
+   - preferred single entrypoint: `createShieldedFetch(...)`
+   - relayed mode: pass `relayerEndpoint` in `createShieldedFetch(...)`
+   - direct merchant mode: omit `relayerEndpoint`
    - configure `proofProvider` with `createNoirJsProofProviderFromDefaultCircuit()` for in-process proving
 4. Wrapper posts the proof bundle to relayer (`/v1/relay/pay`).
 5. Relayer settles onchain and returns merchant response.

@@ -7,3 +7,4 @@ export * from './proofProvider.js';
 export * from './relayerFetch.js';
 export * from './shieldedFetch.js';
 export * from './types.js';
+export * from './walletState.js';

@@ -144,14 +144,18 @@ See:
 
 1. Start relayer:
    - `RELAYER_RPC_URL=http://127.0.0.1:8545 SHIELDED_POOL_ADDRESS=<pool> ULTRA_VERIFIER_ADDRESS=<verifier> RELAYER_PRIVATE_KEY=<key> pnpm relayer:dev`
-2. In agent/client, use `createRelayedShieldedFetch(...)` instead of `createShieldedFetch(...)`.
-3. Ensure merchant challenge endpoint is discoverable:
+2. In agent/client, use `createShieldedFetch({ ..., relayerEndpoint })` for relayed mode.
+3. For existing non-shielded merchant rails, ensure relayer bridge endpoint is reachable:
+   - `POST /v1/relay/challenge`
+   - relayer env must include `RELAYER_SHIELDED_MERCHANT_PUBKEY` and `RELAYER_SHIELDED_VERIFYING_CONTRACT` (or `SHIELDED_POOL_ADDRESS`)
+4. Ensure merchant challenge endpoint is discoverable:
    - provide `challengeUrlResolver`, or ensure paid endpoint returns 402 with `PAYMENT-REQUIRED`.
-4. Execute paid request:
+5. Execute paid request:
    - merchant returns 402
+   - SDK bridges non-shielded challenge through relayer if needed
    - agent generates proof locally
    - relayer verifies + settles onchain + executes payout adapter
    - response is returned to agent
-5. Verify relayer status:
+6. Verify relayer status:
    - `GET /v1/relay/status/:settlementId`
    - status should reach `DONE`

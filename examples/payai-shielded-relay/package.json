@@ -1,0 +1,18 @@
+{
+  "name": "payai-shielded-relay",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Shielded client -> relayer -> PayAI x402 payout example",
+  "scripts": {
+    "start": "node test-payai-shielded.mjs"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "^2.1.11",
+    "@noir-lang/noir_js": "^1.0.0-beta.18",
+    "@shielded-x402/client": "^0.2.3",
+    "@shielded-x402/shared-types": "^0.2.3",
+    "dotenv": "^16.6.1",
+    "viem": "^2.45.3"
+  }
+}
