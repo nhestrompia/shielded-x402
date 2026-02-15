@@ -1,5 +1,5 @@
 import type { Hex, ShieldedPaymentResponse } from '@shielded-x402/shared-types';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, decodeErrorResult, http } from 'viem';
 import type { VerifierAdapter } from './types.js';
 
 const ultraVerifierAbi = [
@@ -49,7 +49,87 @@ function selectorFromError(error: unknown): string | undefined {
   return match ? match[0].toLowerCase() : undefined;
 }
 
+function selectorFromNestedError(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+
+    if (typeof current === 'string') {
+      const hexCandidate = current.match(/0x[0-9a-fA-F]{10,}/)?.[0];
+      if (hexCandidate && hexCandidate.length !== 42) {
+        return hexCandidate.slice(0, 10).toLowerCase();
+      }
+      const match = current.match(/selector=0x[0-9a-fA-F]{8}/);
+      if (match?.[0]) {
+        const selector = match[0].split('=')[1];
+        if (selector) return selector.toLowerCase();
+      }
+      continue;
+    }
+
+    if (typeof current === 'object') {
+      const maybeData = (current as { data?: unknown }).data;
+      if (typeof maybeData === 'string') {
+        const dataHex = maybeData.trim();
+        if (/^0x[0-9a-fA-F]{10,}$/.test(dataHex) && dataHex.length !== 42) {
+          return dataHex.slice(0, 10).toLowerCase();
+        }
+      }
+      for (const value of Object.values(current as Record<string, unknown>)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function revertDataFromError(error: unknown): Hex | undefined {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+
+    if (typeof current === 'string') {
+      const dataHex = current.trim();
+      if (/^0x[0-9a-fA-F]{10,}$/.test(dataHex) && dataHex.length !== 42) {
+        return dataHex.toLowerCase() as Hex;
+      }
+      continue;
+    }
+
+    if (typeof current === 'object') {
+      const maybeData = (current as { data?: unknown }).data;
+      if (typeof maybeData === 'string') {
+        const dataHex = maybeData.trim();
+        if (/^0x[0-9a-fA-F]{10,}$/.test(dataHex) && dataHex.length !== 42) {
+          return dataHex.toLowerCase() as Hex;
+        }
+      }
+      for (const value of Object.values(current as Record<string, unknown>)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return undefined;
+}
+
 const shieldedPoolReadAbi = [
+  {
+    type: 'function',
+    name: 'verifier',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }]
+  },
   {
     type: 'function',
     name: 'isNullifierUsed',
@@ -84,9 +164,32 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
   const client = createPublicClient({
     transport: http(config.rpcUrl)
   });
+  let resolvedVerifierAddress: Hex | null = null;
+  let verifierBindingNote: string | null = null;
 
   return {
     verifyProof: async (payload) => {
+      if (!resolvedVerifierAddress) {
+        const configured = config.ultraVerifierAddress.toLowerCase() as Hex;
+        try {
+          const poolVerifier = (await client.readContract({
+            address: config.shieldedPoolAddress,
+            abi: shieldedPoolReadAbi,
+            functionName: 'verifier',
+            args: []
+          })) as Hex;
+          const normalizedPoolVerifier = poolVerifier.toLowerCase() as Hex;
+          resolvedVerifierAddress = normalizedPoolVerifier;
+          if (normalizedPoolVerifier !== configured) {
+            verifierBindingNote =
+              `pool verifier auto-selected (${normalizedPoolVerifier}); configured verifier was ${configured}`;
+          }
+        } catch {
+          // Fallback to configured verifier for non-standard pool contracts.
+          resolvedVerifierAddress = configured;
+        }
+      }
+
       const rootKnown = await client.readContract({
         address: config.shieldedPoolAddress,
         abi: shieldedPoolReadAbi,
@@ -102,7 +205,7 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
       let verified: boolean;
       try {
         verified = await client.readContract({
-          address: config.ultraVerifierAddress,
+          address: resolvedVerifierAddress,
           abi: ultraVerifierAbi,
           functionName: 'verify',
           args: [payload.proof, payload.publicInputs as Hex[]]
@@ -112,23 +215,40 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
           error && typeof error === 'object' && 'shortMessage' in error
             ? String((error as { shortMessage?: unknown }).shortMessage ?? '')
             : '';
-        const selector = selectorFromError(error);
-        const knownName = selector ? knownVerifierErrorBySelector[selector] : undefined;
+        const revertData = revertDataFromError(error);
+        const selector =
+          (revertData ? (revertData.slice(0, 10).toLowerCase() as string) : undefined) ??
+          selectorFromNestedError(error) ??
+          selectorFromError(error);
+        const decodedName = (() => {
+          if (!revertData) return undefined;
+          try {
+            const decoded = decodeErrorResult({
+              abi: ultraVerifierAbi,
+              data: revertData
+            });
+            return decoded.errorName;
+          } catch {
+            return undefined;
+          }
+        })();
+        const knownName = decodedName ?? (selector ? knownVerifierErrorBySelector[selector] : undefined);
         if (knownName) {
           throw new Error(
-            `verifier reverted: ${knownName} (selector=${selector}, verifier=${config.ultraVerifierAddress})`
+            `verifier reverted: ${knownName} (selector=${selector}, verifier=${resolvedVerifierAddress})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
           );
         }
         if (shortMessage.length > 0) {
+          const selectorHint = selector ? ` selector=${selector}.` : '';
           throw new Error(
-            `verifier call reverted (verifier=${config.ultraVerifierAddress}): ${shortMessage}`
+            `verifier call reverted (verifier=${resolvedVerifierAddress}): ${shortMessage}.${selectorHint}${verifierBindingNote ? ` ${verifierBindingNote}` : ''}`
           );
         }
         throw error;
       }
       if (!verified) {
         throw new Error(
-          `verifier returned false (verifier=${config.ultraVerifierAddress}, publicInputs=${payload.publicInputs.length})`
+          `verifier returned false (verifier=${resolvedVerifierAddress}, publicInputs=${payload.publicInputs.length})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
         );
       }
       return true;

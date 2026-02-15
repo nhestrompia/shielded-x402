@@ -16,6 +16,9 @@
   - `createNoirJsProofProvider({ noir, backend })`
   - configure via `ShieldedClientConfig.proofProvider`
   - easiest default artifact path: `createNoirJsProofProviderFromDefaultCircuit()`
+  - circuit-backed providers default to `keccak` UltraHonk proof settings (matches generated onchain verifier in this repo)
+  - override if needed:
+    - `createNoirJsProofProviderFromDefaultCircuit({ backendProofOptions: { keccakZK: true } })` if your verifier target explicitly requires zk transcript mode
 
 ### Plug-and-Play Proof Generation (NoirJS)
 

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "poolAddress": "0xcb0F01B24E2768AbBAc7CeaABc03432b6a23F5Ac",
+  "lastSyncedBlock": "37711557",
+  "commitments": [
+    "0xdcc0c7dcac0f523edfdce70042e0a7cf32f1f6b2b7e2c75d0faa7bde29a2af55"
+  ],
+  "notes": [
+    {
+      "amount": "1000000",
+      "rho": "0x000000000000000000000000000000000000000000000000000000000000002a",
+      "pkHash": "0x000000000000000000000000000000000000000000000000000000000000000b",
+      "commitment": "0xdcc0c7dcac0f523edfdce70042e0a7cf32f1f6b2b7e2c75d0faa7bde29a2af55",
+      "leafIndex": 0,
+      "depositBlock": "37711557"
+    }
+  ]
+}

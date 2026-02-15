@@ -153,6 +153,18 @@ export interface NoirJsProofProviderConfig {
   enforcePublicInputsMatch?: boolean;
 }
 
+export interface NoirJsUltraHonkProofOptions {
+  keccak?: boolean;
+  keccakZK?: boolean;
+  starknet?: boolean;
+  starknetZK?: boolean;
+}
+
+export interface NoirJsCircuitProofProviderConfig
+  extends Omit<NoirJsProofProviderConfig, 'noir' | 'backend'> {
+  backendProofOptions?: NoirJsUltraHonkProofOptions;
+}
+
 export interface NoirCircuitArtifact {
   bytecode: string;
   [key: string]: unknown;
@@ -217,7 +229,7 @@ export function createNoirJsProofProvider(config: NoirJsProofProviderConfig): Pr
  */
 export async function createNoirJsProofProviderFromCircuit(
   circuit: NoirCircuitArtifact,
-  config?: Omit<NoirJsProofProviderConfig, 'noir' | 'backend'>
+  config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
   const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
   const noirPkg = await dynamicImport('@noir-lang/noir_js');
@@ -228,9 +240,20 @@ export async function createNoirJsProofProviderFromCircuit(
 
   const noir = new Noir(circuit);
   const backend = new UltraHonkBackend(circuit.bytecode);
+  // Keep SDK defaults aligned with verifier generation scripts (`BB_ORACLE_HASH=keccak`).
+  // This prevents subtle prover/verifier transcript mismatches in deployed flows.
+  const backendProofOptions = config?.backendProofOptions ?? { keccak: true };
   const providerConfig: NoirJsProofProviderConfig = {
     noir,
-    backend
+    backend: {
+      generateProof: async (witness: unknown) =>
+        (
+          backend.generateProof as (
+            witness: unknown,
+            options?: NoirJsUltraHonkProofOptions
+          ) => Promise<{ proof: unknown; publicInputs?: unknown }>
+        )(witness, backendProofOptions)
+    }
   };
   if (config?.enforcePublicInputsMatch !== undefined) {
     providerConfig.enforcePublicInputsMatch = config.enforcePublicInputsMatch;
@@ -245,7 +268,7 @@ export async function createNoirJsProofProviderFromCircuit(
  * loads the bundled spend_change artifact from this package.
  */
 export async function createNoirJsProofProviderFromDefaultCircuit(
-  config?: Omit<NoirJsProofProviderConfig, 'noir' | 'backend'>
+  config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
   const circuit = await loadBundledSpendChangeCircuit();
   return createNoirJsProofProviderFromCircuit(circuit, config);

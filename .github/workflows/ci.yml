@@ -22,9 +22,12 @@ jobs:
       - name: Install Noir toolchain
         run: |
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
           echo "$HOME/.nargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.bb" >> $GITHUB_PATH
           export PATH="$HOME/.nargo/bin:$PATH"
           noirup -v 1.0.0-beta.18
+          PATH="$HOME/.nargo/bin:$PATH" ~/.bb/bbup -nv 1.0.0-beta.18
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Install Foundry deps
