@@ -154,6 +154,15 @@ export interface NoirJsProofProviderConfig {
 }
 
 export interface NoirJsUltraHonkProofOptions {
+  verifierTarget?:
+    | 'evm'
+    | 'evm-no-zk'
+    | 'noir-recursive'
+    | 'noir-recursive-no-zk'
+    | 'noir-rollup'
+    | 'noir-rollup-no-zk'
+    | 'starknet'
+    | 'starknet-no-zk';
   keccak?: boolean;
   keccakZK?: boolean;
   starknet?: boolean;
@@ -232,17 +241,78 @@ export async function createNoirJsProofProviderFromCircuit(
   config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
   const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
-  const noirPkg = await dynamicImport('@noir-lang/noir_js');
-  const bbPkg = await dynamicImport('@aztec/bb.js');
+  const importFromCallerFirst = async (moduleName: string): Promise<any> => {
+    try {
+      const modulePkg = await dynamicImport('node:module');
+      const urlPkg = await dynamicImport('node:url');
+      const createRequire = modulePkg.createRequire as (path: string) => NodeJS.Require;
+      const pathToFileURL = urlPkg.pathToFileURL as (path: string) => URL;
+      const callerRequire = createRequire(`${process.cwd()}/package.json`);
+      const resolved = callerRequire.resolve(moduleName);
+      return dynamicImport(pathToFileURL(resolved).href);
+    } catch {
+      return dynamicImport(moduleName);
+    }
+  };
+
+  const noirPkg = await importFromCallerFirst('@noir-lang/noir_js');
+  const bbPkg = await importFromCallerFirst('@aztec/bb.js');
 
   const Noir = noirPkg.Noir as new (artifact: NoirCircuitArtifact) => NoirJsProgramExecutor;
-  const UltraHonkBackend = bbPkg.UltraHonkBackend as new (bytecode: string) => NoirJsBackend;
+  const UltraHonkBackend = bbPkg.UltraHonkBackend as
+    | (new (bytecode: string) => NoirJsBackend)
+    | (new (bytecode: string, api: unknown) => NoirJsBackend);
 
   const noir = new Noir(circuit);
-  const backend = new UltraHonkBackend(circuit.bytecode);
+
+  // bb.js v3 expects an API instance in UltraHonkBackend(bytecode, api),
+  // while older versions used UltraHonkBackend(bytecode).
+  const backend = await (async () => {
+    const ctorArity = (UltraHonkBackend as unknown as { length?: number }).length ?? 1;
+    if (ctorArity < 2) {
+      return new (UltraHonkBackend as new (bytecode: string) => NoirJsBackend)(circuit.bytecode);
+    }
+
+    const Barretenberg = bbPkg.Barretenberg as
+      | {
+          initSingleton?: (options?: Record<string, unknown>) => Promise<unknown>;
+          getSingleton?: () => unknown;
+          new?: (options?: Record<string, unknown>) => Promise<unknown>;
+        }
+      | undefined;
+
+    if (!Barretenberg) {
+      throw new Error('bb.js backend requires Barretenberg API constructor, but none was exported');
+    }
+
+    let api: unknown;
+    if (typeof Barretenberg.getSingleton === 'function') {
+      try {
+        api = Barretenberg.getSingleton();
+      } catch {
+        // singleton not initialized yet
+      }
+    }
+    if (!api && typeof Barretenberg.initSingleton === 'function') {
+      await Barretenberg.initSingleton();
+      api = Barretenberg.getSingleton?.();
+    }
+    if (!api && typeof Barretenberg.new === 'function') {
+      api = await Barretenberg.new();
+    }
+    if (!api) {
+      throw new Error('unable to initialize bb.js Barretenberg API');
+    }
+
+    return new (UltraHonkBackend as new (bytecode: string, api: unknown) => NoirJsBackend)(
+      circuit.bytecode,
+      api
+    );
+  })();
+
   // Generated verifier contracts in this repo are ZK Honk by default.
   // Keep SDK defaults aligned so proof byte length/transcript mode matches onchain verification.
-  const backendProofOptions = config?.backendProofOptions ?? { keccakZK: true };
+  const backendProofOptions = config?.backendProofOptions ?? { verifierTarget: 'evm' };
   const providerConfig: NoirJsProofProviderConfig = {
     noir,
     backend: {

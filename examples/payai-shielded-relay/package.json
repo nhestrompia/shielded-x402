@@ -8,7 +8,7 @@
     "start": "node test-payai-shielded.mjs"
   },
   "dependencies": {
-    "@aztec/bb.js": "^2.1.11",
+    "@aztec/bb.js": "3.0.0-nightly.20260102",
     "@noir-lang/noir_js": "^1.0.0-beta.18",
     "@shielded-x402/client": "file:../../sdk/client",
     "@shielded-x402/shared-types": "file:../../packages/shared-types",

@@ -44,12 +44,26 @@ function getString(input: Record<string, unknown>, key: string): string | undefi
   return typeof value === 'string' ? value : undefined;
 }
 
+function stringifyOutputSchema(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseUpstreamTermsFromRequirement(raw: Record<string, unknown>): UpstreamTerms {
   const scheme = getString(raw, 'scheme');
   const network = getString(raw, 'network');
   const asset = getString(raw, 'asset');
   const payTo = getString(raw, 'payTo');
-  const amount = getString(raw, 'amount');
+  const amount = getString(raw, 'amount') ?? getString(raw, 'maxAmountRequired');
 
   if (!scheme || !network || !asset || !payTo || !amount) {
     throw new Error('merchant PAYMENT-REQUIRED is missing required x402 fields');
@@ -68,7 +82,7 @@ function parseUpstreamTermsFromRequirement(raw: Record<string, unknown>): Upstre
   const rail = getString(raw, 'rail');
   const description = getString(raw, 'description');
   const mimeType = getString(raw, 'mimeType');
-  const outputSchema = getString(raw, 'outputSchema');
+  const outputSchema = stringifyOutputSchema(raw.outputSchema);
   if (rail) terms.rail = rail;
   if (description) terms.description = description;
   if (mimeType) terms.mimeType = mimeType;

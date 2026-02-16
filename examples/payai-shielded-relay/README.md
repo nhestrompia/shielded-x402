@@ -52,6 +52,7 @@ npm run start
 - `NOTE_AMOUNT` (must be >= merchant requirement amount)
 - `NOTE_RHO`
 - `NOTE_PK_HASH`
+- `NOTE_COMMITMENT` (optional: force a specific note commitment from wallet state)
 - `PAYER_PK_HASH` (nullifier secret used in this MVP)
 
 The script now uses SDK `FileBackedWalletState`:
@@ -62,6 +63,7 @@ The script now uses SDK `FileBackedWalletState`:
 - supports Envio GraphQL sync (`WALLET_INDEXER_URL`) to avoid RPC log range limits
 - derives witness locally from persisted state
 - applies relayer settlement deltas (change note + leaf indexes) after each call
+- marks spent input notes locally to avoid nullifier reuse on the next run
 
 This is the production-friendly DX path for agents and avoids repeated full-range scans.
 
@@ -74,7 +76,18 @@ Recommended usage:
    - run script once to populate `wallet-state.json`
 2. Subsequent runs:
    - set `WALLET_SYNC_ON_START=false`
-   - script uses cached witness/context from `wallet-state.json` (minimal RPC/indexer reads)
+   - script auto-selects an unspent note from `wallet-state.json` (minimal RPC/indexer reads)
+   - optionally set `NOTE_COMMITMENT` to pin a specific note
+
+## Nullifier reuse
+
+If you see `failureReason: "nullifier already used"`:
+
+1. The note was already consumed onchain in a previous successful settlement.
+2. Re-running with the same note commitment creates the same nullifier and is rejected.
+
+The updated script now marks the spent note in `wallet-state.json` and picks the next unspent note automatically.
+If no unspent note remains, deposit a fresh note and retry.
 
 ## Seed matching note on pool (required)
 

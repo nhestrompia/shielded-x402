@@ -45,8 +45,12 @@ function selectorFromError(error: unknown): string | undefined {
     error instanceof Error
       ? `${error.message}\n${String((error as { stack?: unknown }).stack ?? '')}`
       : String(error);
-  const match = text.match(/0x[0-9a-fA-F]{8}/);
-  return match ? match[0].toLowerCase() : undefined;
+  const explicit = text.match(/selector=0x[0-9a-fA-F]{8}/);
+  if (explicit?.[0]) {
+    const selector = explicit[0].split('=')[1];
+    if (selector) return selector.toLowerCase();
+  }
+  return undefined;
 }
 
 function selectorFromNestedError(error: unknown): string | undefined {
@@ -59,10 +63,6 @@ function selectorFromNestedError(error: unknown): string | undefined {
     seen.add(current);
 
     if (typeof current === 'string') {
-      const hexCandidate = current.match(/0x[0-9a-fA-F]{10,}/)?.[0];
-      if (hexCandidate && hexCandidate.length !== 42) {
-        return hexCandidate.slice(0, 10).toLowerCase();
-      }
       const match = current.match(/selector=0x[0-9a-fA-F]{8}/);
       if (match?.[0]) {
         const selector = match[0].split('=')[1];
@@ -97,15 +97,9 @@ function revertDataFromError(error: unknown): Hex | undefined {
     if (!current || seen.has(current)) continue;
     seen.add(current);
 
-    if (typeof current === 'string') {
-      const dataHex = current.trim();
-      if (/^0x[0-9a-fA-F]{10,}$/.test(dataHex) && dataHex.length !== 42) {
-        return dataHex.toLowerCase() as Hex;
-      }
-      continue;
-    }
-
     if (typeof current === 'object') {
+      // Only trust explicit error data fields; avoid parsing arbitrary strings
+      // (proof bytes can appear in stack/messages and look like revert data).
       const maybeData = (current as { data?: unknown }).data;
       if (typeof maybeData === 'string') {
         const dataHex = maybeData.trim();
@@ -146,6 +140,45 @@ const shieldedPoolReadAbi = [
   }
 ] as const;
 
+const adapterReadAbi = [
+  {
+    type: 'function',
+    name: 'verifier',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }]
+  }
+] as const;
+
+const HASH_PUBLIC_INPUT_BYTES = 32;
+const HASH_PUBLIC_INPUT_COUNT = 5;
+const COMPACT_PUBLIC_INPUT_COUNT = 6;
+const EXPANDED_PUBLIC_INPUT_COUNT = (HASH_PUBLIC_INPUT_BYTES * HASH_PUBLIC_INPUT_COUNT) + 1;
+
+function expandCompactPublicInputs(compact: readonly Hex[]): Hex[] {
+  if (compact.length !== COMPACT_PUBLIC_INPUT_COUNT) {
+    throw new Error(`expected ${COMPACT_PUBLIC_INPUT_COUNT} compact public inputs, got ${compact.length}`);
+  }
+
+  const expanded: Hex[] = [];
+  for (let i = 0; i < HASH_PUBLIC_INPUT_COUNT; i += 1) {
+    const word = compact[i];
+    if (!word) throw new Error(`missing compact public input at index ${i}`);
+    const hex = word.slice(2).padStart(64, '0');
+    for (let j = 0; j < HASH_PUBLIC_INPUT_BYTES; j += 1) {
+      const byteHex = hex.slice(j * 2, j * 2 + 2);
+      const byte = BigInt(`0x${byteHex}`);
+      expanded.push(`0x${byte.toString(16).padStart(64, '0')}` as Hex);
+    }
+  }
+  expanded.push(compact[5] as Hex);
+
+  if (expanded.length !== EXPANDED_PUBLIC_INPUT_COUNT) {
+    throw new Error(`expected ${EXPANDED_PUBLIC_INPUT_COUNT} expanded public inputs, got ${expanded.length}`);
+  }
+  return expanded;
+}
+
 export function createAllowAllVerifier(): VerifierAdapter {
   const seen = new Set<Hex>();
   return {
@@ -165,6 +198,8 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
     transport: http(config.rpcUrl)
   });
   let resolvedVerifierAddress: Hex | null = null;
+  let resolvedUltraVerifierAddress: Hex | null = null;
+  let verifierIsAdapter = false;
   let verifierBindingNote: string | null = null;
 
   return {
@@ -188,6 +223,24 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
           // Fallback to configured verifier for non-standard pool contracts.
           resolvedVerifierAddress = configured;
         }
+
+        try {
+          const maybeUltra = (await client.readContract({
+            address: resolvedVerifierAddress,
+            abi: adapterReadAbi,
+            functionName: 'verifier',
+            args: []
+          })) as Hex;
+          resolvedUltraVerifierAddress = maybeUltra.toLowerCase() as Hex;
+          verifierIsAdapter = true;
+          const adapterNote = `adapter=${resolvedVerifierAddress} ultra=${resolvedUltraVerifierAddress}`;
+          verifierBindingNote = verifierBindingNote
+            ? `${verifierBindingNote}; ${adapterNote}`
+            : adapterNote;
+        } catch {
+          resolvedUltraVerifierAddress = resolvedVerifierAddress;
+          verifierIsAdapter = false;
+        }
       }
 
       const rootKnown = await client.readContract({
@@ -204,11 +257,17 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
 
       let verified: boolean;
       try {
+        const verifyAddress =
+          (verifierIsAdapter ? resolvedUltraVerifierAddress : resolvedVerifierAddress) as Hex;
+        const verifyInputs = verifierIsAdapter
+          ? expandCompactPublicInputs(payload.publicInputs as Hex[])
+          : (payload.publicInputs as Hex[]);
+
         verified = await client.readContract({
-          address: resolvedVerifierAddress,
+          address: verifyAddress,
           abi: ultraVerifierAbi,
           functionName: 'verify',
-          args: [payload.proof, payload.publicInputs as Hex[]]
+          args: [payload.proof, verifyInputs]
         });
       } catch (error) {
         const shortMessage =
@@ -235,20 +294,20 @@ export function createOnchainVerifier(config: OnchainVerifierConfig): VerifierAd
         const knownName = decodedName ?? (selector ? knownVerifierErrorBySelector[selector] : undefined);
         if (knownName) {
           throw new Error(
-            `verifier reverted: ${knownName} (selector=${selector}, verifier=${resolvedVerifierAddress})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
+            `verifier reverted: ${knownName} (selector=${selector}, verifier=${resolvedUltraVerifierAddress ?? resolvedVerifierAddress})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
           );
         }
         if (shortMessage.length > 0) {
           const selectorHint = selector ? ` selector=${selector}.` : '';
           throw new Error(
-            `verifier call reverted (verifier=${resolvedVerifierAddress}): ${shortMessage}.${selectorHint}${verifierBindingNote ? ` ${verifierBindingNote}` : ''}`
+            `verifier call reverted (verifier=${resolvedUltraVerifierAddress ?? resolvedVerifierAddress}): ${shortMessage}.${selectorHint}${verifierBindingNote ? ` ${verifierBindingNote}` : ''}`
           );
         }
         throw error;
       }
       if (!verified) {
         throw new Error(
-          `verifier returned false (verifier=${resolvedVerifierAddress}, publicInputs=${payload.publicInputs.length})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
+          `verifier returned false (verifier=${resolvedUltraVerifierAddress ?? resolvedVerifierAddress}, publicInputs=${payload.publicInputs.length})${verifierBindingNote ? `; ${verifierBindingNote}` : ''}`
         );
       }
       return true;

@@ -22,6 +22,7 @@ interface PersistedNote {
   commitment: Hex;
   leafIndex: number;
   depositBlock?: string;
+  spent?: boolean;
 }
 
 interface PersistedWalletState {
@@ -34,6 +35,7 @@ interface PersistedWalletState {
 
 export interface WalletNoteRecord extends ShieldedNote {
   depositBlock?: bigint;
+  spent?: boolean;
 }
 
 export interface WalletStateSnapshot {
@@ -96,7 +98,8 @@ function serialize(state: InMemoryWalletState, poolAddress: Hex): PersistedWalle
       pkHash: note.pkHash,
       commitment: note.commitment,
       leafIndex: note.leafIndex,
-      ...(note.depositBlock !== undefined ? { depositBlock: note.depositBlock.toString() } : {})
+      ...(note.depositBlock !== undefined ? { depositBlock: note.depositBlock.toString() } : {}),
+      ...(note.spent !== undefined ? { spent: note.spent } : {})
     }))
   };
 }
@@ -111,7 +114,8 @@ function deserialize(payload: PersistedWalletState): InMemoryWalletState {
       pkHash: note.pkHash,
       commitment: note.commitment,
       leafIndex: note.leafIndex,
-      ...(note.depositBlock !== undefined ? { depositBlock: BigInt(note.depositBlock) } : {})
+      ...(note.depositBlock !== undefined ? { depositBlock: BigInt(note.depositBlock) } : {}),
+      ...(note.spent !== undefined ? { spent: note.spent } : {})
     }))
   };
 }
@@ -195,9 +199,11 @@ export class FileBackedWalletState {
     const existingIndex = this.state.notes.findIndex(
       (candidate) => normalizeHex(candidate.commitment) === normalizedCommitment
     );
+    const existing = existingIndex >= 0 ? this.state.notes[existingIndex] : undefined;
     const record: WalletNoteRecord = {
       ...note,
-      ...(depositBlock !== undefined ? { depositBlock } : {})
+      ...(depositBlock !== undefined ? { depositBlock } : {}),
+      ...(existing?.spent !== undefined ? { spent: existing.spent } : {})
     };
 
     if (existingIndex >= 0) {
@@ -210,6 +216,26 @@ export class FileBackedWalletState {
       this.state.commitments[record.leafIndex] = record.commitment;
     }
     await this.persist();
+  }
+
+  async markNoteSpent(commitment: Hex): Promise<boolean> {
+    const normalized = normalizeHex(commitment);
+    const existingIndex = this.state.notes.findIndex(
+      (candidate) => normalizeHex(candidate.commitment) === normalized
+    );
+    if (existingIndex < 0) {
+      return false;
+    }
+    const note = this.state.notes[existingIndex];
+    if (!note) {
+      return false;
+    }
+    if (note.spent) {
+      return true;
+    }
+    note.spent = true;
+    await this.persist();
+    return true;
   }
 
   async recordSpendOutputs(params: {
@@ -228,7 +254,11 @@ export class FileBackedWalletState {
   async applyRelayerSettlement(params: {
     settlementDelta?: RelayerSettlementDelta;
     changeNote?: ShieldedNote;
+    spentNoteCommitment?: Hex;
   }): Promise<void> {
+    if (params.spentNoteCommitment) {
+      await this.markNoteSpent(params.spentNoteCommitment);
+    }
     const delta = params.settlementDelta;
     if (!delta) return;
 
@@ -612,6 +642,9 @@ export class FileBackedWalletState {
       throw new Error(
         `note not found in wallet state for commitment ${commitment}; add note secrets first with addOrUpdateNote()`
       );
+    }
+    if (note.spent) {
+      throw new Error(`note ${commitment} is marked spent in wallet state`);
     }
 
     const leafIndex = note.leafIndex >= 0 ? note.leafIndex : this.findLeafIndex(commitment);

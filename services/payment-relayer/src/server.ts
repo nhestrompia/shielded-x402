@@ -10,6 +10,7 @@ import { createPaymentRelayerProcessor } from './processor.js';
 import {
   createForwardPayoutAdapter,
   createNoopPayoutAdapter,
+  createPayaiX402ProviderAdapter,
   createX402PayoutAdapter
 } from './payout.js';
 import { createOnchainSettlement, createNoopSettlement } from './settlement.js';
@@ -100,7 +101,8 @@ const payout =
             rpcUrl: relayerX402RpcUrl,
             privateKey: relayerX402PrivateKey,
             chain: relayerX402Chain,
-            staticHeaders: staticPayoutHeaders
+            staticHeaders: staticPayoutHeaders,
+            providerAdapters: [createPayaiX402ProviderAdapter()]
           });
         })()
       : createForwardPayoutAdapter({

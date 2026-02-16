@@ -34,6 +34,7 @@ const noteAmount = parseEnvBigInt('NOTE_AMOUNT', 1000000n);
 const noteRho = toWord(parseEnvBigInt('NOTE_RHO', 42n));
 const notePkHash = toWord(parseEnvBigInt('NOTE_PK_HASH', 11n));
 const payerPkHash = toWord(parseEnvBigInt('PAYER_PK_HASH', 9n));
+const preferredCommitment = process.env.NOTE_COMMITMENT?.trim().toLowerCase();
 
 if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
   throw new Error('Set PAYER_PRIVATE_KEY in .env');
@@ -50,7 +51,7 @@ const sdk = new ShieldedClientSDK({
   endpoint: relayerEndpoint,
   signer: (message) => account.signMessage({ message }),
   proofProvider: await createNoirJsProofProviderFromDefaultCircuit({
-    backendProofOptions: { keccakZK: true }
+    backendProofOptions: { verifierTarget: 'evm' }
   })
 });
 
@@ -74,21 +75,43 @@ const walletState = await FileBackedWalletState.create({
 
 await walletState.addOrUpdateNote(note);
 let syncResult;
-let resolvedContext;
 
-const resolveWalletContext = async (forceSync) => {
-  if (!forceSync) {
-    try {
-      return walletState.getSpendContextByCommitment(note.commitment, payerPkHash);
-    } catch {}
+const pickSpendableNote = (requiredAmount) => {
+  const notes = walletState
+    .getNotes()
+    .filter((candidate) => candidate.leafIndex >= 0 && !candidate.spent && candidate.amount >= requiredAmount)
+    .sort((a, b) => {
+      const aBlock = a.depositBlock ?? -1n;
+      const bBlock = b.depositBlock ?? -1n;
+      if (aBlock !== bBlock) return aBlock > bBlock ? -1 : 1;
+      return b.leafIndex - a.leafIndex;
+    });
+
+  if (preferredCommitment) {
+    const preferred = notes.find(
+      (candidate) => candidate.commitment.toLowerCase() === preferredCommitment
+    );
+    if (preferred) return preferred;
   }
 
-  syncResult = await walletState.sync();
-  return walletState.getSpendContextByCommitment(note.commitment, payerPkHash);
+  const envNoteCandidate = notes.find(
+    (candidate) => candidate.commitment.toLowerCase() === note.commitment.toLowerCase()
+  );
+  if (envNoteCandidate) {
+    return envNoteCandidate;
+  }
+
+  return notes[0];
+};
+
+const resolveWalletContext = async (forceSync) => {
+  if (forceSync) {
+    syncResult = await walletState.sync();
+  }
 };
 
 try {
-  resolvedContext = await resolveWalletContext(walletSyncOnStart);
+  await resolveWalletContext(walletSyncOnStart);
 } catch (error) {
   const snapshot = walletState.snapshot();
   const knownLeaf = snapshot.commitments.findIndex(
@@ -108,37 +131,53 @@ try {
 const shieldedFetch = createShieldedFetch({
   sdk,
   relayerEndpoint,
-  onRelayerSettlement: async ({ relayResponse, prepared }) => {
+  onRelayerSettlement: async ({ relayResponse, prepared, context }) => {
+    if (relayResponse.settlementDelta) {
+      await walletState.applyRelayerSettlement({
+        settlementDelta: relayResponse.settlementDelta,
+        changeNote: prepared.changeNote,
+        spentNoteCommitment: context.note.commitment
+      });
+      return;
+    }
+
+    const failureReason = relayResponse.failureReason?.toLowerCase() ?? '';
+    if (
+      relayResponse.status === 'FAILED' &&
+      failureReason.includes('nullifier already used')
+    ) {
+      await walletState.markNoteSpent(context.note.commitment);
+      return;
+    }
+
     if (relayResponse.status !== 'DONE') {
       return;
     }
-    await walletState.applyRelayerSettlement({
-      settlementDelta: relayResponse.settlementDelta,
-      changeNote: prepared.changeNote
-    });
   },
   resolveContext: async ({ requirement }) => {
     const requiredAmount = BigInt(requirement.amount);
-    if (note.amount < requiredAmount) {
+    const selected = pickSpendableNote(requiredAmount);
+    if (!selected) {
       throw new Error(
         [
-          'insufficient note amount for merchant price',
-          `note.amount=${note.amount.toString()}`,
+          'no spendable note found in wallet-state',
           `requirement.amount=${requiredAmount.toString()}`,
-          'Set NOTE_AMOUNT >= requirement.amount and deposit that note commitment to the pool before retrying.'
+          'Deposit a new note and/or sync wallet state, then retry.',
+          `statePath=${walletStatePath}`
         ].join(' | ')
       );
     }
-    return resolvedContext;
+
+    return walletState.getSpendContextByCommitment(selected.commitment, payerPkHash);
   }
 });
 console.log(`[1/2] Calling existing x402 merchant endpoint: ${payaiUrl}`);
 console.log(
   [
-    `[config] noteAmount=${note.amount.toString()}`,
-    `commitment=${note.commitment}`,
+    `[config] seedNoteAmount=${note.amount.toString()}`,
+    `seedCommitment=${note.commitment}`,
+    `preferredCommitment=${preferredCommitment ?? 'none'}`,
     `payerPkHash=${payerPkHash}`,
-    `leafIndex=${resolvedContext.note.leafIndex}`,
     `witnessMode=wallet-state`,
     `syncSource=${walletIndexerUrl ? 'indexer' : 'rpc'}`,
     `statePath=${walletStatePath}`,
@@ -162,5 +201,17 @@ console.log(`[2/2] status=${response.status} (${elapsed}ms)`);
 console.log(`content-type=${response.headers.get('content-type') ?? 'unknown'}`);
 console.log(`x-relayer-settlement-id=${response.headers.get('x-relayer-settlement-id') ?? 'n/a'}`);
 console.log(`payment-required-header-present=${response.headers.has('payment-required')}`);
+const paymentResponseHeader =
+  response.headers.get('x-payment-response') ??
+  response.headers.get('payment-response');
+console.log(`x-payment-response-present=${Boolean(paymentResponseHeader)}`);
+if (paymentResponseHeader) {
+  try {
+    const decoded = Buffer.from(paymentResponseHeader, 'base64').toString('utf8');
+    console.log(`x-payment-response-decoded=${decoded}`);
+  } catch {
+    console.log('x-payment-response-decoded=<invalid base64>');
+  }
+}
 const body = await response.text();
 console.log(body);
