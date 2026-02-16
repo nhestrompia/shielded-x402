@@ -6,7 +6,7 @@ networks:
     contracts:
       - name: ShieldedPool
         address:
-          - 0x0bD8AB5d315E2957d07367931cEc91c817fc2Cc7
+          - 0x915315F4F672619364A8dAFd79E709943697C544
         handler: src/EventHandlers.ts
         events:
           - event: Deposited(bytes32 indexed commitment, uint256 indexed leafIndex, bytes32 indexed root, uint256 amount)
