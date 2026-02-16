@@ -19,10 +19,20 @@ const parseEnvBoolean = (key, fallback) => {
   if (!raw || raw.trim() === '') return fallback;
   return raw.trim().toLowerCase() === 'true';
 };
+const BN254_FIELD_MODULUS =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const isFieldSafeHex = (value) => {
+  try {
+    const n = BigInt(value);
+    return n >= 0n && n < BN254_FIELD_MODULUS;
+  } catch {
+    return false;
+  }
+};
 
 const relayerEndpoint = process.env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
 const payaiUrl = process.env.PAYAI_URL ?? 'https://x402.payai.network/api/base-sepolia/paid-content';
-const poolRpcUrl = process.env.POOL_RPC_URL ?? process.env.SEPOLIA_RPC_URL;
+const poolRpcUrl = process.env.POOL_RPC_URL?.trim() || undefined;
 const walletIndexerUrl = process.env.WALLET_INDEXER_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS;
 const walletStatePath = process.env.WALLET_STATE_PATH ?? './wallet-state.json';
@@ -73,13 +83,26 @@ const walletState = await FileBackedWalletState.create({
   chunkSize: walletSyncChunkSize
 });
 
-await walletState.addOrUpdateNote(note);
+if (isFieldSafeHex(note.rho) && isFieldSafeHex(note.pkHash)) {
+  await walletState.addOrUpdateNote(note);
+} else {
+  console.warn(
+    `[config-warning] skipping NOTE_* seed note because rho/pkHash is not BN254 field-safe (seedCommitment=${note.commitment})`
+  );
+}
 let syncResult;
 
 const pickSpendableNote = (requiredAmount) => {
   const notes = walletState
     .getNotes()
-    .filter((candidate) => candidate.leafIndex >= 0 && !candidate.spent && candidate.amount >= requiredAmount)
+    .filter(
+      (candidate) =>
+        candidate.leafIndex >= 0 &&
+        !candidate.spent &&
+        candidate.amount >= requiredAmount &&
+        isFieldSafeHex(candidate.rho) &&
+        isFieldSafeHex(candidate.pkHash)
+    )
     .sort((a, b) => {
       const aBlock = a.depositBlock ?? -1n;
       const bBlock = b.depositBlock ?? -1n;
@@ -162,7 +185,7 @@ const shieldedFetch = createShieldedFetch({
         [
           'no spendable note found in wallet-state',
           `requirement.amount=${requiredAmount.toString()}`,
-          'Deposit a new note and/or sync wallet state, then retry.',
+          'Deposit a new note with secrets (npm run seed-note) and/or sync wallet state, then retry.',
           `statePath=${walletStatePath}`
         ].join(' | ')
       );

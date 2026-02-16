@@ -86,6 +86,7 @@ export interface X402PayoutConfig extends ForwardPayoutConfig {
 
 export interface X402ProviderAdapterContext {
   requestUrl: string;
+  cachedAcceptRequirement?: Record<string, unknown>;
 }
 
 export interface X402ProviderAdapter {
@@ -262,21 +263,94 @@ function normalizeOutputSchema(raw: unknown): Record<string, unknown> | undefine
   return undefined;
 }
 
-function remapPaymentHeaderNetworkToCaip(rawHeader: string): string {
+function toEip155CaipNetwork(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const lowered = raw.trim().toLowerCase();
+  if (lowered.startsWith('eip155:')) return lowered;
+  const normalized = normalizeNetwork(lowered);
+  if (!normalized) return undefined;
+  return X402_NETWORK_TO_EIP155_CAIP[normalized];
+}
+
+function buildPayaiAcceptedRequirement(
+  source: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!source) return undefined;
+  const network = toEip155CaipNetwork(getString(source, 'network'));
+  const amount =
+    getIntegerString(source, 'amount') ??
+    getIntegerString(source, 'maxAmountRequired');
+  const payTo = getString(source, 'payTo');
+  const asset = getString(source, 'asset');
+  if (!network || !amount || !payTo || !asset) return undefined;
+
+  const out: Record<string, unknown> = {
+    scheme: 'exact',
+    network,
+    amount,
+    payTo,
+    asset
+  };
+  const maxTimeoutSeconds = source.maxTimeoutSeconds;
+  if (typeof maxTimeoutSeconds === 'number' && Number.isFinite(maxTimeoutSeconds)) {
+    out.maxTimeoutSeconds = Math.trunc(maxTimeoutSeconds);
+  }
+  const resource = getString(source, 'resource');
+  if (resource) out.resource = resource;
+  const description = getString(source, 'description');
+  if (description) out.description = description;
+  const mimeType = getString(source, 'mimeType');
+  if (mimeType) out.mimeType = mimeType;
+  const outputSchema = getRecord(source.outputSchema);
+  if (outputSchema) out.outputSchema = outputSchema;
+  return out;
+}
+
+function rewritePaymentSignatureForPayai(
+  rawHeader: string,
+  cachedAcceptRequirement: Record<string, unknown> | undefined
+): string {
   try {
     const parsed = JSON.parse(Buffer.from(rawHeader, 'base64').toString('utf8')) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return rawHeader;
     }
     const payment = parsed as Record<string, unknown>;
-    const network = typeof payment.network === 'string' ? payment.network.toLowerCase() : undefined;
-    if (!network) return rawHeader;
-    const mapped = X402_NETWORK_TO_EIP155_CAIP[network];
-    if (!mapped || mapped === payment.network) return rawHeader;
-    const rewritten = {
-      ...payment,
-      network: mapped
+    const rewritten: Record<string, unknown> = { ...payment };
+    const caipNetwork = toEip155CaipNetwork(getString(payment, 'network'));
+    if (caipNetwork) {
+      rewritten.network = caipNetwork;
+    }
+
+    const authorization = getRecord(getRecord(payment.payload)?.authorization);
+    const acceptedFromPayload = buildPayaiAcceptedRequirement(getRecord(payment.accepted));
+    const acceptedFromCache = buildPayaiAcceptedRequirement(cachedAcceptRequirement);
+    const accepted: Record<string, unknown> = {
+      ...(acceptedFromCache ?? {}),
+      ...(acceptedFromPayload ?? {})
     };
+    if (!accepted.network && caipNetwork) accepted.network = caipNetwork;
+    if (!accepted.amount) {
+      const value = getIntegerString(authorization ?? {}, 'value');
+      if (value) accepted.amount = value;
+    }
+    if (!accepted.payTo) {
+      const to = getString(authorization ?? {}, 'to');
+      if (to) accepted.payTo = to;
+    }
+    if (
+      typeof accepted.network === 'string' &&
+      typeof accepted.amount === 'string' &&
+      typeof accepted.payTo === 'string' &&
+      typeof accepted.asset === 'string'
+    ) {
+      accepted.scheme = 'exact';
+      rewritten.accepted = accepted;
+    }
+
+    if (rewritten.x402Version === undefined) {
+      rewritten.x402Version = 2;
+    }
     return Buffer.from(JSON.stringify(rewritten), 'utf8').toString('base64');
   } catch {
     return rawHeader;
@@ -485,9 +559,19 @@ function createAdaptiveX402BaseFetch(
   fetchImpl: typeof fetch,
   providerAdapters: X402ProviderAdapter[] | undefined
 ): typeof fetch {
+  const acceptedRequirementCache = new Map<string, Record<string, unknown>>();
+
   return async (input, init) => {
     const inputUrl = resolveInputUrl(input) ?? 'https://example.invalid';
-    const context: X402ProviderAdapterContext = { requestUrl: inputUrl };
+    const cachedAcceptRequirement = acceptedRequirementCache.get(inputUrl);
+    const context: X402ProviderAdapterContext = cachedAcceptRequirement
+      ? {
+          requestUrl: inputUrl,
+          cachedAcceptRequirement
+        }
+      : {
+          requestUrl: inputUrl
+        };
     const providerAdapter = findMatchingProviderAdapter(providerAdapters, context);
     let nextHeaders = withPaymentHeaderAliases(new Headers(init?.headers));
     if (providerAdapter?.transformOutgoingRequestHeaders) {
@@ -500,23 +584,46 @@ function createAdaptiveX402BaseFetch(
       headers: nextHeaders
     };
     const response = await fetchImpl(input, nextInit);
-    return normalize402Response(response, inputUrl, providerAdapter, context);
+    const normalizedResponse = await normalize402Response(response, inputUrl, providerAdapter, context);
+    if (normalizedResponse.status === 402) {
+      try {
+        const body = (await normalizedResponse.clone().json()) as unknown;
+        const bodyRecord = getRecord(body);
+        const accepts = bodyRecord && Array.isArray(bodyRecord.accepts) ? bodyRecord.accepts : [];
+        const firstAccept = accepts.length > 0 ? getRecord(accepts[0]) : undefined;
+        if (firstAccept) {
+          acceptedRequirementCache.set(inputUrl, firstAccept);
+        }
+      } catch {
+        // ignore cache refresh errors; response normalization still succeeded
+      }
+    }
+    return normalizedResponse;
   };
 }
 
-function isPayaiHost(requestUrl: string): boolean {
+function isProviderHost(requestUrl: string, domains: string[]): boolean {
   try {
     const host = new URL(requestUrl).hostname.toLowerCase();
-    return host === 'payai.network' || host.endsWith('.payai.network');
+    return domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
   } catch {
     return false;
   }
 }
 
-export function createPayaiX402ProviderAdapter(): X402ProviderAdapter {
+export interface HostedX402ProviderAdapterConfig {
+  domains?: string[];
+}
+
+export function createPayaiX402ProviderAdapter(
+  config: HostedX402ProviderAdapterConfig = {}
+): X402ProviderAdapter {
+  const domains = (config.domains ?? ['payai.network']).map((value) =>
+    value.toLowerCase()
+  );
   return {
     name: 'payai',
-    matches: ({ requestUrl }) => isPayaiHost(requestUrl),
+    matches: ({ requestUrl }) => isProviderHost(requestUrl, domains),
     transformParsed402Body: (body) => {
       if (Array.isArray(body.accepts)) {
         return body;
@@ -534,13 +641,16 @@ export function createPayaiX402ProviderAdapter(): X402ProviderAdapter {
         accepts: requirements
       };
     },
-    transformOutgoingRequestHeaders: (headers) => {
+    transformOutgoingRequestHeaders: (headers, context) => {
       const next = new Headers(headers);
       const paymentSignature = next.get(X402_HEADERS.paymentSignature);
       const xPayment = next.get('x-payment') ?? next.get('X-PAYMENT');
       const signature = paymentSignature ?? xPayment;
       if (signature) {
-        const rewrittenSignature = remapPaymentHeaderNetworkToCaip(signature);
+        const rewrittenSignature = rewritePaymentSignatureForPayai(
+          signature,
+          context.cachedAcceptRequirement
+        );
         next.set(X402_HEADERS.paymentSignature, rewrittenSignature);
         next.set('X-PAYMENT', rewrittenSignature);
       }

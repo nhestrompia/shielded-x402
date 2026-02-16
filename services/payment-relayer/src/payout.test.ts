@@ -14,7 +14,7 @@ function decodeBody(result: RelayerMerchantResult): Record<string, unknown> {
 }
 
 describe('x402 payout provider adapters', () => {
-  it('rewrites payai outbound payment network to eip155 caip format', async () => {
+  it('rewrites payai outbound payment network to CAIP format', async () => {
     let seenHeaders = new Headers();
     const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       seenHeaders = new Headers(init?.headers);
@@ -32,7 +32,7 @@ describe('x402 payout provider adapters', () => {
           const payment = {
             x402Version: 2,
             scheme: 'exact',
-            network: 'base-sepolia',
+            network: 'eip155:84532',
             payload: {
               authorization: {
                 from: '0x1',
@@ -212,5 +212,60 @@ describe('x402 payout provider adapters', () => {
     const parsedBody = decodeBody(result);
     const accepts = parsedBody.accepts as Array<Record<string, unknown>>;
     expect(accepts[0]?.description).toBe('provider override');
+  });
+
+  it('hydrates payai accepted requirement on outbound header when cached requirement exists', () => {
+    const adapter = createPayaiX402ProviderAdapter();
+    const paymentSignature = Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        scheme: 'exact',
+        network: 'base-sepolia',
+        payload: {
+          signature: '0x4',
+          authorization: {
+            from: '0x1',
+            to: '0x2a835A505d4Ea32372Cc420d2663b885cE089453',
+            value: '10000',
+            validAfter: '1',
+            validBefore: '2',
+            nonce: '0x3'
+          }
+        }
+      }),
+      'utf8'
+    ).toString('base64');
+    const transformed = adapter.transformOutgoingRequestHeaders?.(
+      new Headers({
+        [X402_HEADERS.paymentSignature]: paymentSignature
+      }),
+      {
+        requestUrl: 'https://x402.payai.network/api/base-sepolia/paid-content',
+        cachedAcceptRequirement: {
+          scheme: 'exact',
+          network: 'base-sepolia',
+          maxAmountRequired: '10000',
+          resource: 'https://x402.payai.network/api/base-sepolia/paid-content',
+          description: 'Access to protected content on base-sepolia',
+          mimeType: 'application/json',
+          payTo: '0x2a835A505d4Ea32372Cc420d2663b885cE089453',
+          maxTimeoutSeconds: 300,
+          asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+        }
+      }
+    );
+    const outHeaders = new Headers(transformed);
+    const outSig = outHeaders.get(X402_HEADERS.paymentSignature);
+    expect(outSig).toBeTruthy();
+    const decoded = JSON.parse(Buffer.from(outSig as string, 'base64').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    const accepted = decoded.accepted as Record<string, unknown>;
+    expect(decoded.network).toBe('eip155:84532');
+    expect(accepted.network).toBe('eip155:84532');
+    expect(accepted.amount).toBe('10000');
+    expect(accepted.asset).toBe('0x036CbD53842c5426634e7929541eC2318f3dCF7e');
+    expect(accepted.payTo).toBe('0x2a835A505d4Ea32372Cc420d2663b885cE089453');
   });
 });

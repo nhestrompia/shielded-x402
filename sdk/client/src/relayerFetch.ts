@@ -1,10 +1,12 @@
 import {
+  encodeX402Header,
   parsePaymentRequiredEnvelope,
   parsePaymentRequiredHeader,
   RELAYER_ROUTES,
   X402_HEADERS,
   type Hex,
   type PaymentRequirement,
+  type X402PaymentRequired,
   type RelayerChallengeRequest,
   type RelayerChallengeResponse,
   type RelayerPayRequest,
@@ -92,11 +94,11 @@ async function requestShieldedRequirementFromRelayer(
   relayerEndpoint: string,
   relayerChallengePath: string,
   merchantRequest: RelayerChallengeRequest['merchantRequest'],
-  merchantPaymentRequiredHeader: string
+  merchantPaymentRequiredHeader?: string
 ): Promise<PaymentRequirement> {
   const challengeRequest: RelayerChallengeRequest = {
     merchantRequest,
-    merchantPaymentRequiredHeader
+    ...(merchantPaymentRequiredHeader ? { merchantPaymentRequiredHeader } : {})
   };
 
   const response = await baseFetch(`${relayerEndpoint.replace(/\/$/, '')}${relayerChallengePath}`, {
@@ -173,6 +175,124 @@ function toRelayResultResponse(relayResponse: RelayerPayResponse): Response {
   });
 }
 
+function getRecord(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  return input as Record<string, unknown>;
+}
+
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function getIntegerString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) return trimmed;
+    if (trimmed.length > 0 && Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0) {
+      return Math.trunc(Number(trimmed)).toString();
+    }
+    return undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.trunc(value).toString();
+  }
+  if (typeof value === 'bigint' && value >= 0n) {
+    return value.toString();
+  }
+  return undefined;
+}
+
+function normalizeRequirementLike(
+  input: Record<string, unknown>,
+  fallbackResource: string
+): Record<string, unknown> | undefined {
+  const extra = getRecord(input.extra);
+  const scheme = (getString(input, 'scheme') ?? getString(extra ?? {}, 'scheme') ?? 'exact').toLowerCase();
+  const network = getString(input, 'network') ?? getString(extra ?? {}, 'network');
+  const payTo = getString(input, 'payTo') ?? getString(input, 'to') ?? getString(extra ?? {}, 'payTo');
+  const asset = getString(input, 'asset') ?? getString(extra ?? {}, 'asset');
+  const amount =
+    getIntegerString(input, 'amount') ??
+    getIntegerString(input, 'maxAmountRequired') ??
+    getIntegerString(extra ?? {}, 'amount') ??
+    getIntegerString(extra ?? {}, 'maxAmountRequired');
+
+  if (!scheme || !network || !payTo || !asset || !amount) return undefined;
+
+  const normalized: Record<string, unknown> = {
+    scheme,
+    network,
+    amount,
+    payTo,
+    asset
+  };
+  normalized.resource = getString(input, 'resource') ?? getString(extra ?? {}, 'resource') ?? fallbackResource;
+  const description = getString(input, 'description') ?? getString(extra ?? {}, 'description');
+  if (description) normalized.description = description;
+  const mimeType = getString(input, 'mimeType') ?? getString(extra ?? {}, 'mimeType');
+  if (mimeType) normalized.mimeType = mimeType;
+  const rail = getString(input, 'rail') ?? getString(extra ?? {}, 'rail');
+  const challengeNonce =
+    getString(input, 'challengeNonce') ?? getString(extra ?? {}, 'challengeNonce');
+  const challengeExpiry =
+    getString(input, 'challengeExpiry') ?? getString(extra ?? {}, 'challengeExpiry');
+  const merchantPubKey =
+    getString(input, 'merchantPubKey') ?? getString(extra ?? {}, 'merchantPubKey');
+  const verifyingContract =
+    getString(input, 'verifyingContract') ?? getString(extra ?? {}, 'verifyingContract');
+  if (rail && challengeNonce && challengeExpiry && merchantPubKey && verifyingContract) {
+    normalized.rail = rail;
+    normalized.challengeNonce = challengeNonce;
+    normalized.challengeExpiry = challengeExpiry;
+    normalized.merchantPubKey = merchantPubKey;
+    normalized.verifyingContract = verifyingContract;
+  }
+  const maxTimeoutSeconds = input.maxTimeoutSeconds ?? extra?.maxTimeoutSeconds;
+  if (typeof maxTimeoutSeconds === 'number' && Number.isFinite(maxTimeoutSeconds)) {
+    normalized.maxTimeoutSeconds = Math.trunc(maxTimeoutSeconds);
+  }
+  if (input.outputSchema !== undefined) normalized.outputSchema = input.outputSchema;
+  if (extra) normalized.extra = extra;
+  return normalized;
+}
+
+async function resolvePaymentRequiredHeader(
+  response: Response,
+  fallbackResource: string
+): Promise<string | undefined> {
+  const directHeader = response.headers.get(X402_HEADERS.paymentRequired);
+  if (directHeader) return directHeader;
+
+  let bodyRecord: Record<string, unknown> | undefined;
+  try {
+    bodyRecord = getRecord((await response.clone().json()) as unknown);
+  } catch {
+    bodyRecord = undefined;
+  }
+  if (!bodyRecord) return undefined;
+
+  const candidates: unknown[] = [];
+  if (Array.isArray(bodyRecord.accepts)) candidates.push(...bodyRecord.accepts);
+  if (Array.isArray(bodyRecord.requirements)) candidates.push(...bodyRecord.requirements);
+  if (candidates.length === 0) candidates.push(bodyRecord);
+
+  const normalizedAccept = candidates
+    .map((entry) => getRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => normalizeRequirementLike(entry, fallbackResource))
+    .find((entry): entry is Record<string, unknown> => Boolean(entry));
+  if (!normalizedAccept) return undefined;
+
+  const envelope: X402PaymentRequired = {
+    x402Version: 2,
+    accepts: [normalizedAccept],
+    ...(typeof bodyRecord.error === 'string' ? { error: bodyRecord.error } : {})
+  };
+  return encodeX402Header(envelope);
+}
+
 export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchConfig): RelayedShieldedFetch {
   const baseFetch = config.fetchImpl ?? fetch;
   const relayerPath = config.relayerPath ?? RELAYER_ROUTES.pay;
@@ -198,7 +318,7 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
 
     const first = await baseFetch(normalizedInput, serializedToFetchInit(method, serializedRequest));
     if (first.status !== 402) return first;
-    const merchantRequiredHeader = first.headers.get(X402_HEADERS.paymentRequired);
+    const merchantRequiredHeader = await resolvePaymentRequiredHeader(first, normalizedInput);
     if (!merchantRequiredHeader) {
       throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
     }
@@ -207,7 +327,7 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
     let requirement: PaymentRequirement;
     let parsedRequirement: PaymentRequirement | undefined;
     try {
-      parsedRequirement = config.sdk.parse402Response(first).requirement;
+      parsedRequirement = parsePaymentRequiredHeader(merchantRequiredHeader);
     } catch {
       parsedRequirement = undefined;
     }

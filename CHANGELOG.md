@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.2.4 - 2026-02-16
+
+### Fixed
+
+- Relayer payout provider bridge now correctly handles provider-specific x402 header/network transformations while preserving normalized x402 requirement semantics.
+- Added fallback parsing for 402 JSON bodies that omit the `PAYMENT-REQUIRED` header in both relayed client flow and relayer challenge fetcher.
+- Improved hosted x402 provider adapter matching and safer optional context typing under `exactOptionalPropertyTypes`.
+- Tightened `relayerFetch` test typings for stricter TypeScript checks.
+- Bumped package versions:
+  - `@shielded-x402/shared-types` -> `0.2.4`
+  - `@shielded-x402/client` -> `0.2.4`
+
 ## 0.2.2 - 2026-02-15
 
 ### Fixed

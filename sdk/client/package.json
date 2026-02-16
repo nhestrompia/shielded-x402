@@ -1,6 +1,6 @@
 {
   "name": "@shielded-x402/client",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,7 +25,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@shielded-x402/shared-types": "workspace:^0.2.2",
+    "@shielded-x402/shared-types": "workspace:^0.2.4",
     "viem": "^2.39.3"
   },
   "peerDependencies": {

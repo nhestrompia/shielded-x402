@@ -34,6 +34,7 @@ cd shielded-402/examples/payai-shielded-relay
 npm install
 cp .env.example .env
 # set PAYER_PRIVATE_KEY and NOTE_* values
+npm run seed-note
 npm run start
 ```
 
@@ -54,6 +55,7 @@ npm run start
 - `NOTE_PK_HASH`
 - `NOTE_COMMITMENT` (optional: force a specific note commitment from wallet state)
 - `PAYER_PK_HASH` (nullifier secret used in this MVP)
+- `DEPOSITOR_PRIVATE_KEY` (optional; defaults to `DEPLOYER_PRIVATE_KEY` then `PAYER_PRIVATE_KEY`)
 
 The script now uses SDK `FileBackedWalletState`:
 
@@ -72,7 +74,7 @@ Recommended usage:
 1. First bootstrap run:
    - set `WALLET_SYNC_ON_START=true`
    - set `POOL_FROM_BLOCK` to your pool deployment block
-   - if using Envio hosted, set `WALLET_INDEXER_URL=https://indexer.dev.hyperindex.xyz/<slug>/v1/graphql`
+   - if using Envio hosted, set `WALLET_INDEXER_URL=https://indexer.dev.hyperindex.xyz/c355f9f/v1/graphql` for base-sepolia
    - run script once to populate `wallet-state.json`
 2. Subsequent runs:
    - set `WALLET_SYNC_ON_START=false`
@@ -89,9 +91,43 @@ If you see `failureReason: "nullifier already used"`:
 The updated script now marks the spent note in `wallet-state.json` and picks the next unspent note automatically.
 If no unspent note remains, deposit a fresh note and retry.
 
-## Seed matching note on pool (required)
+## Why notes are "single-use"
 
-Before running the script, deposit the exact note commitment derived from `NOTE_AMOUNT`, `NOTE_RHO`, `NOTE_PK_HASH` to your deployed Sepolia `SHIELDED_POOL_ADDRESS`.
+Each shielded note is UTXO-like and can be spent only once (same note => same nullifier).
+
+- one successful payment consumes one input note
+- relayer settlement creates two outputs:
+  - merchant note (for merchant side)
+  - change note (back to payer)
+- SDK stores change note secrets in `wallet-state.json`, so you can keep paying without manual scans
+
+So you do **not** need to re-deposit for every call if each call succeeds and change is recorded.
+You only need a fresh deposit when there is no spendable change/note left.
+
+## Helper: seed and register a spendable note
+
+Use this helper to avoid manual `cast` commands and lost `NOTE_RHO`:
+
+```bash
+cd shielded-402/examples/payai-shielded-relay
+set -a; source .env; set +a
+npm run seed-note
+```
+
+It will:
+
+- derive/generate note secrets
+- approve + deposit to `SHIELDED_POOL_ADDRESS`
+- store the note (with secrets) into `wallet-state.json`
+- print `NOTE_*` exports for immediate use
+
+By default it generates a fresh random `NOTE_RHO` each run (safer).
+Set `SEED_USE_FIXED_RHO=true` only if you explicitly want to reuse `NOTE_RHO`.
+
+## Seed matching note on pool (manual fallback)
+
+Before running the script, deposit the exact note commitment derived from `NOTE_AMOUNT`, `NOTE_RHO`, `NOTE_PK_HASH` to your deployed `SHIELDED_POOL_ADDRESS`.
+Prefer `npm run seed-note`; manual flow below is fallback.
 
 Example:
 

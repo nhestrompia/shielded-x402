@@ -3,11 +3,12 @@ import {
   X402_HEADERS,
   buildPaymentRequiredHeader,
   type Hex,
-  type PaymentRequirement
+  type PaymentRequirement,
+  type ShieldedNote
 } from '@shielded-x402/shared-types';
 import { describe, expect, it, vi } from 'vitest';
 import { ShieldedClientSDK } from './client.js';
-import { createRelayedShieldedFetch } from './relayerFetch.js';
+import { createRelayedShieldedFetch, type RelayedShieldedFetchContext } from './relayerFetch.js';
 
 describe('createRelayedShieldedFetch', () => {
   const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
@@ -24,17 +25,17 @@ describe('createRelayedShieldedFetch', () => {
     verifyingContract: '0x0000000000000000000000000000000000000002'
   };
 
-  function buildContext() {
-    const note = {
+  function buildContext(): RelayedShieldedFetchContext {
+    const note: ShieldedNote = {
       amount: 100n,
-      rho: '0x0000000000000000000000000000000000000000000000000000000000000011',
-      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009',
-      commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
+      rho: '0x0000000000000000000000000000000000000000000000000000000000000011' as Hex,
+      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009' as Hex,
+      commitment: '0x0000000000000000000000000000000000000000000000000000000000000033' as Hex,
       leafIndex: 0
-    } as const;
+    };
 
     const witness = {
-      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099' as Hex,
       path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
@@ -46,6 +47,10 @@ describe('createRelayedShieldedFetch', () => {
       witness,
       payerPkHash: note.pkHash
     };
+  }
+
+  function asFetch(mock: ReturnType<typeof vi.fn>): typeof fetch {
+    return mock as unknown as typeof fetch;
   }
 
   it('relays locally-generated proof to relayer and returns merchant response', async () => {
@@ -79,15 +84,15 @@ describe('createRelayedShieldedFetch', () => {
       }
     };
 
-    const fetchImpl = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(merchantChallenge)
-      .mockResolvedValueOnce(new Response(JSON.stringify(relayerResult), { status: 200 })) as typeof fetch;
+      .mockResolvedValueOnce(new Response(JSON.stringify(relayerResult), { status: 200 }));
 
     const relayedFetch = createRelayedShieldedFetch({
       sdk,
       relayerEndpoint: 'http://relayer.local',
-      fetchImpl,
+      fetchImpl: asFetch(fetchMock),
       resolveContext: async () => buildContext(),
       challengeUrlResolver: () => 'http://merchant.local/x402/requirement'
     });
@@ -96,8 +101,8 @@ describe('createRelayedShieldedFetch', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('{"ok":true}');
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const relayCall = fetchImpl.mock.calls[1];
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const relayCall = fetchMock.mock.calls[1];
     expect(relayCall?.[0]).toBe('http://relayer.local/v1/relay/pay');
 
     const relayInit = relayCall?.[1] as RequestInit;
@@ -132,7 +137,7 @@ describe('createRelayedShieldedFetch', () => {
       }
     });
 
-    const fetchImpl = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(merchantChallenge)
       .mockResolvedValueOnce(
@@ -161,13 +166,13 @@ describe('createRelayedShieldedFetch', () => {
           }),
           { status: 200 }
         )
-      ) as typeof fetch;
+      );
     const fallback = vi.fn(async () => new Response('fallback', { status: 409 }));
 
     const relayedFetch = createRelayedShieldedFetch({
       sdk,
       relayerEndpoint: 'http://relayer.local',
-      fetchImpl,
+      fetchImpl: asFetch(fetchMock),
       resolveContext: async () => buildContext(),
       onUnsupportedRail: fallback
     });
@@ -176,9 +181,88 @@ describe('createRelayedShieldedFetch', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('{"ok":true}');
     expect(fallback).toHaveBeenCalledTimes(0);
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/challenge');
-    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://relayer.local/v1/relay/pay');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/challenge');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('http://relayer.local/v1/relay/pay');
+  });
+
+  it('supports merchants returning 402 body requirements without PAYMENT-REQUIRED header', async () => {
+    const sdk = new ShieldedClientSDK({
+      endpoint: 'http://merchant.local',
+      signer: async () => '0xsig',
+      proofProvider: {
+        generateProof: async ({ expectedPublicInputs }) => ({
+          proof: '0x1234',
+          publicInputs: expectedPublicInputs
+        })
+      }
+    });
+
+    const merchantChallenge = new Response(
+      JSON.stringify({
+        x402Version: 2,
+        requirements: [
+          {
+            scheme: 'exact',
+            network: 'base-sepolia',
+            amount: '40',
+            payTo: '0x0000000000000000000000000000000000000002',
+            asset: '0x0000000000000000000000000000000000000000000000000000000000000000'
+          }
+        ]
+      }),
+      {
+        status: 402,
+        headers: {
+          'content-type': 'application/json'
+        }
+      }
+    );
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(merchantChallenge)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requirement,
+            paymentRequiredHeader: buildPaymentRequiredHeader(requirement),
+            upstreamRequirementHash:
+              '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            settlementId: 'settle_bridge_body_only',
+            status: 'DONE',
+            nullifier:
+              '0x1111111111111111111111111111111111111111111111111111111111111111',
+            merchantResult: {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+              bodyBase64: Buffer.from('{"ok":true}', 'utf8').toString('base64')
+            }
+          }),
+          { status: 200 }
+        )
+      );
+
+    const relayedFetch = createRelayedShieldedFetch({
+      sdk,
+      relayerEndpoint: 'http://relayer.local',
+      fetchImpl: asFetch(fetchMock),
+      resolveContext: async () => buildContext()
+    });
+
+    const response = await relayedFetch('http://merchant.local/paid', { method: 'GET' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('{"ok":true}');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/challenge');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('http://relayer.local/v1/relay/pay');
   });
 
   it('returns relay failure details as 502 when merchant result is absent', async () => {
@@ -200,7 +284,7 @@ describe('createRelayedShieldedFetch', () => {
       }
     });
 
-    const fetchImpl = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(merchantChallenge)
       .mockResolvedValueOnce(
@@ -214,12 +298,12 @@ describe('createRelayedShieldedFetch', () => {
           }),
           { status: 422 }
         )
-      ) as typeof fetch;
+      );
 
     const relayedFetch = createRelayedShieldedFetch({
       sdk,
       relayerEndpoint: 'http://relayer.local',
-      fetchImpl,
+      fetchImpl: asFetch(fetchMock),
       resolveContext: async () => buildContext()
     });
 
@@ -260,15 +344,15 @@ describe('createRelayedShieldedFetch', () => {
       }
     };
 
-    const fetchImpl = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(merchantChallenge)
-      .mockResolvedValueOnce(new Response(JSON.stringify(relayerResult), { status: 200 })) as typeof fetch;
+      .mockResolvedValueOnce(new Response(JSON.stringify(relayerResult), { status: 200 }));
 
     const relayedFetch = createRelayedShieldedFetch({
       sdk,
       relayerEndpoint: 'http://relayer.local',
-      fetchImpl,
+      fetchImpl: asFetch(fetchMock),
       resolveContext: async () => buildContext()
     });
 
@@ -298,7 +382,7 @@ describe('createRelayedShieldedFetch', () => {
       }
     });
 
-    const fetchImpl = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(merchantChallenge)
       .mockResolvedValueOnce(
@@ -316,12 +400,12 @@ describe('createRelayedShieldedFetch', () => {
           }),
           { status: 200 }
         )
-      ) as typeof fetch;
+      );
 
     const relayedFetch = createRelayedShieldedFetch({
       sdk,
       relayerEndpoint: 'http://relayer.local',
-      fetchImpl,
+      fetchImpl: asFetch(fetchMock),
       resolveContext: async () => buildContext()
     });
 
@@ -332,7 +416,7 @@ describe('createRelayedShieldedFetch', () => {
       body: requestBytes
     });
 
-    const relayCall = fetchImpl.mock.calls[1];
+    const relayCall = fetchMock.mock.calls[1];
     const relayInit = relayCall?.[1] as RequestInit;
     const relayBody = JSON.parse(String(relayInit.body)) as {
       merchantRequest: { bodyBase64?: string };
