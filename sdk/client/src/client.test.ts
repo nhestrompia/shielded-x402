@@ -8,7 +8,7 @@ import {
 } from '@shielded-x402/shared-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ShieldedClientSDK } from './client.js';
-import { deriveCommitment } from './crypto.js';
+import { deriveCommitment, deriveNullifier } from './crypto.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -47,6 +47,8 @@ describe('ShieldedClientSDK', () => {
       commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
 
     const bundle = sdk.buildSpendProof({
       note,
@@ -55,7 +57,7 @@ describe('ShieldedClientSDK', () => {
         path: [],
         indexBits: []
       },
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey: note.pkHash,
       merchantRho: '0x00000000000000000000000000000000000000000000000000000000000000aa',
       merchantAddress: '0x0000000000000000000000000000000000000001',
@@ -118,18 +120,18 @@ describe('ShieldedClientSDK', () => {
     });
     const second = new Response(JSON.stringify({ ok: true }), { status: 200 });
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(first)
-      .mockResolvedValueOnce(second) as typeof fetch;
-    globalThis.fetch = fetchMock;
+    const fetchMock = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
 
     const result = await sdk.fetchWithShieldedPayment(
       'http://localhost:3000/paid/data',
       { method: 'GET' },
       note,
       witness,
-      note.pkHash
+      nullifierSecret
     );
 
     expect(result.status).toBe(200);
@@ -155,6 +157,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -173,11 +177,10 @@ describe('ShieldedClientSDK', () => {
       signer: async () => '0xsig',
       proofProvider
     });
-
     const bundle = await sdk.buildSpendProofWithProvider({
       note,
       witness,
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey:
         '0x0000000000000000000000000000000000000000000000000000000000000012',
       merchantAddress: '0x0000000000000000000000000000000000000002',
@@ -203,6 +206,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -227,7 +232,7 @@ describe('ShieldedClientSDK', () => {
       requirement,
       note,
       witness,
-      note.pkHash,
+      nullifierSecret,
       { 'x-custom': '1' }
     );
     expect(prepared.response.proof).toBe('0x55');
@@ -237,6 +242,9 @@ describe('ShieldedClientSDK', () => {
     const signedPayload = parsePaymentSignatureHeader(signedHeader ?? '');
     expect(signedPayload.challengeNonce).toBe(requirement.challengeNonce);
     expect(signedPayload.payload.proof).toBe('0x55');
+    expect(signedPayload.payload.nullifier).toBe(
+      deriveNullifier(nullifierSecret, note.commitment)
+    );
     expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
   });
 
@@ -256,6 +264,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -266,7 +276,7 @@ describe('ShieldedClientSDK', () => {
     const bundle = sdk.buildSpendProof({
       note,
       witness,
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey:
         '0x0000000000000000000000000000000000000000000000000000000000000012',
       merchantAddress: '0x0000000000000000000000000000000000000002',

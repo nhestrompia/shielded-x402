@@ -20,7 +20,7 @@ import type { MerkleWitness } from './merkle.js';
 export interface RelayedShieldedFetchContext {
   note: ShieldedNote;
   witness: MerkleWitness;
-  payerPkHash: Hex;
+  nullifierSecret: Hex;
 }
 
 export interface ResolveRelayedContextArgs {
@@ -379,7 +379,7 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
       requirement,
       context.note,
       context.witness,
-      context.payerPkHash,
+      context.nullifierSecret,
       serializedRequest.headers
     );
 

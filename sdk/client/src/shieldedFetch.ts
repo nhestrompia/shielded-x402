@@ -15,7 +15,7 @@ import {
 export interface ShieldedFetchContext {
   note: ShieldedNote;
   witness: MerkleWitness;
-  payerPkHash: Hex;
+  nullifierSecret: Hex;
 }
 
 export interface ResolveShieldedContextArgs {
@@ -104,7 +104,7 @@ export function createShieldedFetch(config: CreateShieldedFetchConfig): Shielded
           prefetched,
           context.note,
           context.witness,
-          context.payerPkHash,
+          context.nullifierSecret,
           requestInit.headers
         );
         first = await baseFetch(normalizedInput, {
@@ -147,7 +147,7 @@ export function createShieldedFetch(config: CreateShieldedFetchConfig): Shielded
       parsed.requirement,
       context.note,
       context.witness,
-      context.payerPkHash,
+      context.nullifierSecret,
       baseFetch
     );
   };

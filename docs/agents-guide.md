@@ -97,7 +97,7 @@ export async function fetchWithAnyRail(
     shielded: ShieldedClientSDK;
     note: any;
     witness: any;
-    payerPkHash: `0x${string}`;
+    nullifierSecret: `0x${string}`;
     payNormalX402: (req: Response) => Promise<Response>;
   },
 ): Promise<Response> {
@@ -114,7 +114,7 @@ export async function fetchWithAnyRail(
       init,
       ctx.note,
       ctx.witness,
-      ctx.payerPkHash,
+      ctx.nullifierSecret,
     );
   }
 

@@ -53,7 +53,7 @@ const shieldedFetch = createShieldedFetch({
   resolveContext: async () => ({
     note,
     witness,
-    payerPkHash: toWord(9),
+    nullifierSecret: toWord(9),
   }),
 });
 

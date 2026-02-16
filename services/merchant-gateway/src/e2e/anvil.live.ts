@@ -65,8 +65,8 @@ async function main(): Promise<void> {
     leafIndex: 0,
   } as const;
   const witness = buildWitnessFromCommitments([note.commitment], 0);
-  const payerPkHash = toWord(9n);
-  const expectedNullifier = deriveNullifier(payerPkHash, note.commitment);
+  const nullifierSecret = toWord(9n);
+  const expectedNullifier = deriveNullifier(nullifierSecret, note.commitment);
   if (latestRoot.toLowerCase() !== witness.root.toLowerCase()) {
     throw new Error(
       `fixture root mismatch: chain latestRoot=${latestRoot} witnessRoot=${witness.root}. ` +
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     resolveContext: async () => ({
       note,
       witness,
-      payerPkHash,
+      nullifierSecret,
     }),
   });
   const retry = await shieldedFetch(`${gatewayUrl.replace(/\/$/, "")}/paid/data`, {

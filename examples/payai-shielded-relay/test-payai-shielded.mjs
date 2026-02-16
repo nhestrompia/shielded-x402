@@ -43,7 +43,7 @@ const payerPrivateKey = process.env.PAYER_PRIVATE_KEY;
 const noteAmount = parseEnvBigInt('NOTE_AMOUNT', 1000000n);
 const noteRho = toWord(parseEnvBigInt('NOTE_RHO', 42n));
 const notePkHash = toWord(parseEnvBigInt('NOTE_PK_HASH', 11n));
-const payerPkHash = toWord(parseEnvBigInt('PAYER_PK_HASH', 9n));
+const nullifierSecret = toWord(parseEnvBigInt('NULLIFIER_SECRET', 9n));
 const preferredCommitment = process.env.NOTE_COMMITMENT?.trim().toLowerCase();
 
 if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
@@ -84,7 +84,7 @@ const walletState = await FileBackedWalletState.create({
 });
 
 if (isFieldSafeHex(note.rho) && isFieldSafeHex(note.pkHash)) {
-  await walletState.addOrUpdateNote(note);
+  await walletState.addOrUpdateNote(note, nullifierSecret);
 } else {
   console.warn(
     `[config-warning] skipping NOTE_* seed note because rho/pkHash is not BN254 field-safe (seedCommitment=${note.commitment})`
@@ -101,7 +101,8 @@ const pickSpendableNote = (requiredAmount) => {
         !candidate.spent &&
         candidate.amount >= requiredAmount &&
         isFieldSafeHex(candidate.rho) &&
-        isFieldSafeHex(candidate.pkHash)
+        isFieldSafeHex(candidate.pkHash) &&
+        isFieldSafeHex(candidate.nullifierSecret)
     )
     .sort((a, b) => {
       const aBlock = a.depositBlock ?? -1n;
@@ -159,6 +160,7 @@ const shieldedFetch = createShieldedFetch({
       await walletState.applyRelayerSettlement({
         settlementDelta: relayResponse.settlementDelta,
         changeNote: prepared.changeNote,
+        changeNullifierSecret: prepared.changeNullifierSecret,
         spentNoteCommitment: context.note.commitment
       });
       return;
@@ -191,7 +193,7 @@ const shieldedFetch = createShieldedFetch({
       );
     }
 
-    return walletState.getSpendContextByCommitment(selected.commitment, payerPkHash);
+    return walletState.getSpendContextByCommitment(selected.commitment);
   }
 });
 console.log(`[1/2] Calling existing x402 merchant endpoint: ${payaiUrl}`);
@@ -200,7 +202,7 @@ console.log(
     `[config] seedNoteAmount=${note.amount.toString()}`,
     `seedCommitment=${note.commitment}`,
     `preferredCommitment=${preferredCommitment ?? 'none'}`,
-    `payerPkHash=${payerPkHash}`,
+    `nullifierSecret=${nullifierSecret}`,
     `witnessMode=wallet-state`,
     `syncSource=${walletIndexerUrl ? 'indexer' : 'rpc'}`,
     `statePath=${walletStatePath}`,

@@ -10,7 +10,7 @@ This example demonstrates:
 6. relayer returns merchant response bytes to the agent
 7. SDK writes relayer settlement deltas back to `wallet-state.json` automatically
 
-Requires `@shielded-x402/client` with `FileBackedWalletState` (next publish after `0.2.2`).
+Requires `@shielded-x402/client@^0.3.0` with `FileBackedWalletState` v2.
 
 Target merchant URL:
 
@@ -54,7 +54,7 @@ npm run start
 - `NOTE_RHO`
 - `NOTE_PK_HASH`
 - `NOTE_COMMITMENT` (optional: force a specific note commitment from wallet state)
-- `PAYER_PK_HASH` (nullifier secret used in this MVP)
+- `NULLIFIER_SECRET` (independent secret used to derive note nullifier; must be field-safe)
 - `DEPOSITOR_PRIVATE_KEY` (optional; defaults to `DEPLOYER_PRIVATE_KEY` then `PAYER_PRIVATE_KEY`)
 
 The script now uses SDK `FileBackedWalletState`:
@@ -66,6 +66,11 @@ The script now uses SDK `FileBackedWalletState`:
 - derives witness locally from persisted state
 - applies relayer settlement deltas (change note + leaf indexes) after each call
 - marks spent input notes locally to avoid nullifier reuse on the next run
+
+Breaking upgrade note:
+
+- wallet state schema is now `version: 2`
+- if upgrading from older SDK builds, recreate or reseed `wallet-state.json`
 
 This is the production-friendly DX path for agents and avoids repeated full-range scans.
 
@@ -121,8 +126,8 @@ It will:
 - store the note (with secrets) into `wallet-state.json`
 - print `NOTE_*` exports for immediate use
 
-By default it generates a fresh random `NOTE_RHO` each run (safer).
-Set `SEED_USE_FIXED_RHO=true` only if you explicitly want to reuse `NOTE_RHO`.
+By default it generates a fresh random `NOTE_RHO` and `NULLIFIER_SECRET` each run (safer).
+Set `SEED_USE_FIXED_RHO=true` and/or `SEED_USE_FIXED_NULLIFIER_SECRET=true` only if you explicitly want deterministic values.
 
 ## Seed matching note on pool (manual fallback)
 

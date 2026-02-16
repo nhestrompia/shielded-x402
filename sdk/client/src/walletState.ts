@@ -19,6 +19,7 @@ interface PersistedNote {
   amount: string;
   rho: Hex;
   pkHash: Hex;
+  nullifierSecret: Hex;
   commitment: Hex;
   leafIndex: number;
   depositBlock?: string;
@@ -26,7 +27,7 @@ interface PersistedNote {
 }
 
 interface PersistedWalletState {
-  version: 1;
+  version: 2;
   poolAddress: Hex;
   lastSyncedBlock: string;
   commitments: Hex[];
@@ -34,6 +35,7 @@ interface PersistedWalletState {
 }
 
 export interface WalletNoteRecord extends ShieldedNote {
+  nullifierSecret: Hex;
   depositBlock?: bigint;
   spent?: boolean;
 }
@@ -48,7 +50,7 @@ export interface WalletStateSnapshot {
 export interface ShieldedSpendContext {
   note: ShieldedNote;
   witness: MerkleWitness;
-  payerPkHash: Hex;
+  nullifierSecret: Hex;
 }
 
 export interface WalletSyncResult {
@@ -88,7 +90,7 @@ function normalizeHex(value: Hex): Hex {
 
 function serialize(state: InMemoryWalletState, poolAddress: Hex): PersistedWalletState {
   return {
-    version: 1,
+    version: 2,
     poolAddress,
     lastSyncedBlock: state.lastSyncedBlock.toString(),
     commitments: state.commitments,
@@ -96,6 +98,7 @@ function serialize(state: InMemoryWalletState, poolAddress: Hex): PersistedWalle
       amount: note.amount.toString(),
       rho: note.rho,
       pkHash: note.pkHash,
+      nullifierSecret: note.nullifierSecret,
       commitment: note.commitment,
       leafIndex: note.leafIndex,
       ...(note.depositBlock !== undefined ? { depositBlock: note.depositBlock.toString() } : {}),
@@ -112,6 +115,7 @@ function deserialize(payload: PersistedWalletState): InMemoryWalletState {
       amount: BigInt(note.amount),
       rho: note.rho,
       pkHash: note.pkHash,
+      nullifierSecret: note.nullifierSecret,
       commitment: note.commitment,
       leafIndex: note.leafIndex,
       ...(note.depositBlock !== undefined ? { depositBlock: BigInt(note.depositBlock) } : {}),
@@ -156,7 +160,7 @@ export class FileBackedWalletState {
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as PersistedWalletState;
-      if (parsed.version !== 1) {
+      if (parsed.version !== 2) {
         throw new Error(`unsupported wallet state version: ${String(parsed.version)}`);
       }
       if (normalizeHex(parsed.poolAddress) !== normalizeHex(this.shieldedPoolAddress)) {
@@ -194,7 +198,7 @@ export class FileBackedWalletState {
     return this.state.notes.map((note) => ({ ...note }));
   }
 
-  async addOrUpdateNote(note: ShieldedNote, depositBlock?: bigint): Promise<void> {
+  async addOrUpdateNote(note: ShieldedNote, nullifierSecret: Hex, depositBlock?: bigint): Promise<void> {
     const normalizedCommitment = normalizeHex(note.commitment);
     const existingIndex = this.state.notes.findIndex(
       (candidate) => normalizeHex(candidate.commitment) === normalizedCommitment
@@ -202,6 +206,7 @@ export class FileBackedWalletState {
     const existing = existingIndex >= 0 ? this.state.notes[existingIndex] : undefined;
     const record: WalletNoteRecord = {
       ...note,
+      nullifierSecret,
       ...(depositBlock !== undefined ? { depositBlock } : {}),
       ...(existing?.spent !== undefined ? { spent: existing.spent } : {})
     };
@@ -254,6 +259,7 @@ export class FileBackedWalletState {
   async applyRelayerSettlement(params: {
     settlementDelta?: RelayerSettlementDelta;
     changeNote?: ShieldedNote;
+    changeNullifierSecret?: Hex;
     spentNoteCommitment?: Hex;
   }): Promise<void> {
     if (params.spentNoteCommitment) {
@@ -271,11 +277,15 @@ export class FileBackedWalletState {
 
     if (params.changeNote) {
       const changeLeafIndex = delta.changeLeafIndex ?? -1;
+      if (!params.changeNullifierSecret) {
+        throw new Error('applyRelayerSettlement requires changeNullifierSecret when changeNote is provided');
+      }
       await this.addOrUpdateNote(
         {
           ...params.changeNote,
           leafIndex: changeLeafIndex
         },
+        params.changeNullifierSecret,
         this.state.lastSyncedBlock >= 0n ? this.state.lastSyncedBlock : undefined
       );
     }
@@ -635,7 +645,7 @@ export class FileBackedWalletState {
     return { deposits, spends, maxBlockNumber };
   }
 
-  getSpendContextByCommitment(commitment: Hex, payerPkHash: Hex): ShieldedSpendContext {
+  getSpendContextByCommitment(commitment: Hex): ShieldedSpendContext {
     const normalized = normalizeHex(commitment);
     const note = this.state.notes.find((candidate) => normalizeHex(candidate.commitment) === normalized);
     if (!note) {
@@ -663,7 +673,7 @@ export class FileBackedWalletState {
     return {
       note: { ...note, leafIndex },
       witness,
-      payerPkHash
+      nullifierSecret: note.nullifierSecret
     };
   }
 

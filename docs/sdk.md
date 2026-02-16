@@ -6,8 +6,8 @@
 - `buildSpendProof({ note, witness, nullifierSecret, merchantPubKey, merchantRho?, merchantAddress, changeRho?, amount, challengeNonce, encryptedReceipt })`
 - `buildSpendProofWithProvider(...)` (same params, injects real proof via configured ProofProvider)
 - `pay402(shieldedPaymentResponse)`
-- `prepare402Payment(requirement, note, witness, payerPkHash, baseHeaders?)` (prebuild headers before request)
-- `fetchWithShieldedPayment(url, init, note, witness, payerPkHash)`
+- `prepare402Payment(requirement, note, witness, nullifierSecret, baseHeaders?)` (prebuild headers before request)
+- `fetchWithShieldedPayment(url, init, note, witness, nullifierSecret)`
 - `createShieldedFetch({ sdk, resolveContext, fetchImpl?, onUnsupportedRail?, prefetchRequirement?, relayerEndpoint?, relayerPath?, challengeUrlResolver? })`
 - `createShieldedFetch({ ..., onRelayerSettlement? })` (hook for relayer settlement deltas)
 - `createRelayedShieldedFetch(...)` (low-level explicit relayer variant; `createShieldedFetch` is the preferred single entrypoint)
@@ -62,7 +62,7 @@ const shieldedFetch = createShieldedFetch({
   resolveContext: async () => ({
     note: walletState.currentSpendableNote,
     witness: walletState.currentWitness,
-    payerPkHash: walletState.payerPkHash
+    nullifierSecret: walletState.currentNullifierSecret
   })
 });
 
@@ -100,7 +100,7 @@ const relayedFetch = createShieldedFetch({
   resolveContext: async () => ({
     note: walletState.currentSpendableNote,
     witness: walletState.currentWitness,
-    payerPkHash: walletState.payerPkHash
+    nullifierSecret: walletState.currentNullifierSecret
   })
 });
 
@@ -138,7 +138,7 @@ const walletState = await FileBackedWalletState.create({
 });
 
 // After a deposit tx, persist note data once:
-await walletState.addOrUpdateNote(noteWithSecrets, depositBlockNumber);
+await walletState.addOrUpdateNote(noteWithSecrets, noteNullifierSecret, depositBlockNumber);
 
 // Before each payment, cheap incremental sync:
 await walletState.sync();
@@ -146,11 +146,12 @@ await walletState.sync();
 const shieldedFetch = createShieldedFetch({
   sdk,
   relayerEndpoint: process.env.RELAYER_ENDPOINT,
-  resolveContext: async () => walletState.getSpendContextByCommitment(noteWithSecrets.commitment, payerPkHash),
+  resolveContext: async () => walletState.getSpendContextByCommitment(noteWithSecrets.commitment),
   onRelayerSettlement: async ({ relayResponse, prepared }) => {
     await walletState.applyRelayerSettlement({
       settlementDelta: relayResponse.settlementDelta,
-      changeNote: prepared.changeNote
+      changeNote: prepared.changeNote,
+      changeNullifierSecret: prepared.changeNullifierSecret
     });
   }
 });
@@ -162,6 +163,10 @@ Why this is better:
 - updates a file after interactions, so next run resumes from `lastSyncedBlock`
 - writes settlement deltas automatically (new change note + leaf indexes) when relayer returns them
 - can sync from Envio GraphQL (`indexerGraphqlUrl`) to avoid free-tier RPC `eth_getLogs` range caps
+
+Compatibility note:
+- `FileBackedWalletState` now uses `wallet-state.json` schema `version: 2` and stores note-level `nullifierSecret`.
+- Older state files should be regenerated when upgrading from pre-0.3.0 SDK builds.
 
 Note encryption utilities:
 - `generateNoteEncryptionKeyPair()`

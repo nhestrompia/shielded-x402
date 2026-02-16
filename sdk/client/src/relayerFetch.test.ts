@@ -45,7 +45,7 @@ describe('createRelayedShieldedFetch', () => {
     return {
       note,
       witness,
-      payerPkHash: note.pkHash
+      nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000008'
     };
   }
 

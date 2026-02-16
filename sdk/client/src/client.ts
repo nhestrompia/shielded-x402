@@ -65,6 +65,7 @@ export class ShieldedClientSDK {
     const merchantCommitment = deriveCommitment(params.amount, merchantRho, params.merchantPubKey);
     const changeAmount = params.note.amount - params.amount;
     const changeRho = params.changeRho ?? randomFieldHex();
+    const changeNullifierSecret = params.changeNullifierSecret ?? randomFieldHex();
     const changeCommitment = deriveCommitment(changeAmount, changeRho, params.note.pkHash);
     const challengeHash = deriveChallengeHash(params.challengeNonce, params.amount, params.merchantAddress);
     const amountHex = (`0x${params.amount.toString(16).padStart(64, '0')}` as Hex);
@@ -90,6 +91,7 @@ export class ShieldedClientSDK {
 
     return {
       merchantRho,
+      changeNullifierSecret,
       response,
       changeNote: {
         amount: changeAmount,
@@ -163,7 +165,7 @@ export class ShieldedClientSDK {
     requirement: PaymentRequirement,
     note: ShieldedNote,
     witness: MerkleWitness,
-    payerPkHash: Hex,
+    nullifierSecret: Hex,
     baseHeaders?: HeadersInit
   ): Promise<Prepared402Payment> {
     if (requirement.rail !== 'shielded-usdc') {
@@ -177,7 +179,7 @@ export class ShieldedClientSDK {
     const spendParams: SpendBuildParams = {
       note,
       witness,
-      nullifierSecret: payerPkHash,
+      nullifierSecret,
       merchantPubKey: requirement.merchantPubKey,
       merchantAddress: merchant,
       amount,
@@ -198,7 +200,8 @@ export class ShieldedClientSDK {
       requirement,
       headers,
       response: bundleWithProof.response,
-      changeNote: bundleWithProof.changeNote
+      changeNote: bundleWithProof.changeNote,
+      changeNullifierSecret: bundleWithProof.changeNullifierSecret
     };
   }
 
@@ -208,14 +211,14 @@ export class ShieldedClientSDK {
     requirement: PaymentRequirement,
     note: ShieldedNote,
     witness: MerkleWitness,
-    payerPkHash: Hex,
+    nullifierSecret: Hex,
     fetchFn: typeof fetch = fetch
   ): Promise<Response> {
     const prepared = await this.prepare402Payment(
       requirement,
       note,
       witness,
-      payerPkHash,
+      nullifierSecret,
       init.headers
     );
 
@@ -225,12 +228,18 @@ export class ShieldedClientSDK {
     });
   }
 
-  async fetchWithShieldedPayment(input: string, init: RequestInit, note: ShieldedNote, witness: MerkleWitness, payerPkHash: Hex): Promise<Response> {
+  async fetchWithShieldedPayment(
+    input: string,
+    init: RequestInit,
+    note: ShieldedNote,
+    witness: MerkleWitness,
+    nullifierSecret: Hex
+  ): Promise<Response> {
     const first = await fetch(input, init);
     if (first.status !== 402) return first;
 
     const parsed = this.parse402Response(first);
-    return this.complete402Payment(input, init, parsed.requirement, note, witness, payerPkHash);
+    return this.complete402Payment(input, init, parsed.requirement, note, witness, nullifierSecret);
   }
 }
 

@@ -7,6 +7,7 @@ import {
 } from '@shielded-x402/shared-types';
 import { describe, expect, it, vi } from 'vitest';
 import { ShieldedClientSDK } from './client.js';
+import type { MerkleWitness } from './merkle.js';
 import { createShieldedFetch } from './shieldedFetch.js';
 
 describe('createShieldedFetch', () => {
@@ -32,8 +33,8 @@ describe('createShieldedFetch', () => {
       commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
       leafIndex: 0
     } as const;
-    const witness = {
-      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+    const witness: MerkleWitness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099' as Hex,
       path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
@@ -61,13 +62,12 @@ describe('createShieldedFetch', () => {
     });
     const second = new Response(JSON.stringify({ ok: true }), { status: 200 });
 
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(first)
-      .mockResolvedValueOnce(second) as typeof fetch;
+    const fetchMock = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     const resolveContext = vi.fn(async () => ({
       note,
       witness,
-      payerPkHash: note.pkHash
+      nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000008'
     }));
 
     const shieldedFetch = createShieldedFetch({
@@ -79,8 +79,8 @@ describe('createShieldedFetch', () => {
     const response = await shieldedFetch('http://localhost:3000/paid/data', { method: 'GET' });
     expect(response.status).toBe(200);
     expect(resolveContext).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const retryHeaders = new Headers((fetchImpl.mock.calls[1] ?? [])[1]?.headers);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryHeaders = new Headers((fetchMock.mock.calls[1] ?? [])[1]?.headers);
     expect(retryHeaders.has(X402_HEADERS.paymentSignature)).toBe(true);
   });
 
@@ -100,7 +100,8 @@ describe('createShieldedFetch', () => {
       }
     });
 
-    const fetchImpl = vi.fn().mockResolvedValueOnce(first) as typeof fetch;
+    const fetchMock = vi.fn().mockResolvedValueOnce(first);
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     const fallback = vi.fn(async () => new Response('fallback', { status: 409 }));
 
     const shieldedFetch = createShieldedFetch({
@@ -125,8 +126,8 @@ describe('createShieldedFetch', () => {
       commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
       leafIndex: 0
     } as const;
-    const witness = {
-      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+    const witness: MerkleWitness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099' as Hex,
       path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
@@ -144,11 +145,12 @@ describe('createShieldedFetch', () => {
         })
       }
     });
-    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('ok', { status: 200 })) as typeof fetch;
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     const resolveContext = vi.fn(async () => ({
       note,
       witness,
-      payerPkHash: note.pkHash
+      nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000008'
     }));
     const prefetchRequirement = vi.fn(async () => requirement);
     const shieldedFetch = createShieldedFetch({
@@ -162,8 +164,8 @@ describe('createShieldedFetch', () => {
     expect(response.status).toBe(200);
     expect(prefetchRequirement).toHaveBeenCalledTimes(1);
     expect(resolveContext).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const firstHeaders = new Headers((fetchImpl.mock.calls[0] ?? [])[1]?.headers);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const firstHeaders = new Headers((fetchMock.mock.calls[0] ?? [])[1]?.headers);
     expect(firstHeaders.has(X402_HEADERS.paymentSignature)).toBe(true);
   });
 
@@ -175,8 +177,8 @@ describe('createShieldedFetch', () => {
       commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
       leafIndex: 0
     } as const;
-    const witness = {
-      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
+    const witness: MerkleWitness = {
+      root: '0x0000000000000000000000000000000000000000000000000000000000000099' as Hex,
       path: new Array<string>(MERKLE_DEPTH).fill(
         '0x0000000000000000000000000000000000000000000000000000000000000000'
       ) as Hex[],
@@ -216,14 +218,15 @@ describe('createShieldedFetch', () => {
       { status: 200 }
     );
 
-    const fetchImpl = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(relayerResult) as typeof fetch;
+    const fetchMock = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(relayerResult);
+    const fetchImpl = fetchMock as unknown as typeof fetch;
 
     const shieldedFetch = createShieldedFetch({
       sdk,
       resolveContext: async () => ({
         note,
         witness,
-        payerPkHash: note.pkHash
+        nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000008'
       }),
       fetchImpl,
       relayerEndpoint: 'http://relayer.local'
@@ -233,7 +236,7 @@ describe('createShieldedFetch', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('{"ok":true}');
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/pay');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://relayer.local/v1/relay/pay');
   });
 });

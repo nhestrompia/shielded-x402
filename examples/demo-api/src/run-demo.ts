@@ -32,7 +32,7 @@ async function run(): Promise<void> {
         resolveContext: async () => ({
           note: deposited.note,
           witness,
-          payerPkHash: ownerPkHash
+          nullifierSecret: '0x0000000000000000000000000000000000000000000000000000000000000009'
         })
       })(merchantUrl, { method: 'GET' })
     : await sdk.fetchWithShieldedPayment(
@@ -40,7 +40,7 @@ async function run(): Promise<void> {
         { method: 'GET' },
         deposited.note,
         witness,
-        ownerPkHash
+        '0x0000000000000000000000000000000000000000000000000000000000000009'
       );
 
   const body = await response.text();

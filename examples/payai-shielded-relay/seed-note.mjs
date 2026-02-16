@@ -73,6 +73,19 @@ if (!isFieldSafe(BigInt(noteRhoWord))) {
     `NOTE_RHO is not BN254 field-safe (${noteRhoDecimal}); set SEED_USE_FIXED_RHO=false or provide smaller NOTE_RHO`
   );
 }
+const useFixedNullifierSecret =
+  (process.env.SEED_USE_FIXED_NULLIFIER_SECRET ?? 'false').trim().toLowerCase() === 'true';
+const rawNullifierSecret = useFixedNullifierSecret ? process.env.NULLIFIER_SECRET?.trim() : undefined;
+const nullifierSecretWord =
+  rawNullifierSecret && rawNullifierSecret.length > 0
+    ? toWord(BigInt(rawNullifierSecret))
+    : randomFieldSafeWord();
+const nullifierSecretDecimal = BigInt(nullifierSecretWord).toString();
+if (!isFieldSafe(BigInt(nullifierSecretWord))) {
+  throw new Error(
+    `NULLIFIER_SECRET is not BN254 field-safe (${nullifierSecretDecimal}); set SEED_USE_FIXED_NULLIFIER_SECRET=false or provide smaller NULLIFIER_SECRET`
+  );
+}
 const commitment = deriveCommitment(noteAmount, noteRhoWord, notePkHash);
 
 const account = privateKeyToAccount(depositorPrivateKey);
@@ -179,6 +192,7 @@ await walletState.addOrUpdateNote(
     commitment,
     leafIndex
   },
+  nullifierSecretWord,
   receipt.blockNumber
 );
 
@@ -189,10 +203,13 @@ console.log(`[seed-note] block=${receipt.blockNumber.toString()}`);
 console.log(`[seed-note] NOTE_AMOUNT=${noteAmount.toString()}`);
 console.log(`[seed-note] NOTE_RHO=${noteRhoDecimal}`);
 console.log(`[seed-note] NOTE_PK_HASH=${BigInt(notePkHash).toString()}`);
+console.log(`[seed-note] NULLIFIER_SECRET=${nullifierSecretDecimal}`);
 console.log(`[seed-note] NOTE_COMMITMENT=${commitment}`);
 console.log(`[seed-note] SEED_USE_FIXED_RHO=${useFixedRho}`);
+console.log(`[seed-note] SEED_USE_FIXED_NULLIFIER_SECRET=${useFixedNullifierSecret}`);
 console.log('[seed-note] export these before npm run start if needed:');
 console.log(`export NOTE_AMOUNT=${noteAmount.toString()}`);
 console.log(`export NOTE_RHO=${noteRhoDecimal}`);
 console.log(`export NOTE_PK_HASH=${BigInt(notePkHash).toString()}`);
+console.log(`export NULLIFIER_SECRET=${nullifierSecretDecimal}`);
 console.log(`export NOTE_COMMITMENT=${commitment}`);
