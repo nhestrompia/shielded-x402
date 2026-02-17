@@ -122,23 +122,24 @@ export async function fetchWithAnyRail(
 }
 ```
 
-## ERC-8004 discovery (optional)
+## ERC-8004 discovery (optional, SDK-side)
 
-If enabled, agents can discover capability before first paid call:
+Use directory providers in the client SDK; relayer remains trust-neutral.
 
-1. Query `GET /agent/:did`.
-2. Check `supportedRails` for `shielded-usdc`.
-3. Route traffic to shielded flow when supported.
-
-Adapter is feature-flagged:
-
-- `ENABLE_ERC8004=true`
-- `ERC8004_REGISTRY_URL=<registry base url>`
+1. Build a directory client with one or more providers:
+   - your Envio GraphQL provider (`createEnvioGraphqlProvider`) as primary source
+   - onchain registry provider (canonical identity fallback)
+   - optional scan/indexer provider (trust/health enrichment)
+2. Resolve ERC-8004 target `{ chainId, tokenId }` to canonical profile.
+3. Rank endpoints with deterministic fixed-snapshot policy.
+4. Execute payment through `createAgentPaymentFetch`.
 
 Reference:
 
-- `/shielded-402/packages/erc8004-adapter/src/index.ts`
-- `/shielded-402/services/merchant-gateway/src/server.ts`
+- `/Users/nhestrompia/Projects/shielded-402/packages/erc8004-adapter/src/client.ts`
+- `/Users/nhestrompia/Projects/shielded-402/packages/erc8004-adapter/src/providers/envioGraphqlProvider.ts`
+- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/agentPaymentFetch.ts`
+- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/counterpartyPolicy.ts`
 
 ## Why ERC-8004 is optional
 
@@ -146,6 +147,19 @@ Reference:
 2. The payment decision remains enforced by x402 challenge binding + proof verification + nullifier/root checks.
 3. ERC-8004 may be unavailable or evolving (draft), but direct shielded x402 calls must still work.
 4. Therefore the adapter is feature-gated and non-blocking.
+
+## Requirement adapters (generic x402 v2)
+
+Different providers may vary in `402` body/header shape. The SDK normalizes through an adapter chain:
+
+- built-in: `createGenericX402V2Adapter()`
+- custom adapters: incoming normalization + requirement normalization + outgoing header rewrite
+
+This keeps core SDK neutral while allowing provider-specific overrides when needed.
+
+Reference:
+
+- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/requirementAdapters.ts`
 
 ## How to utilize ERC-8004 exactly
 

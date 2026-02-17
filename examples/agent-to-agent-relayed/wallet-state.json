@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "poolAddress": "0x915315F4F672619364A8dAFd79E709943697C544",
+  "lastSyncedBlock": "37697416",
+  "commitments": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "0xad5226f4373b83ab98199fb8128a2506d02bf4828caf04e74e32aba28c6e55d5"
+  ],
+  "notes": [
+    {
+      "amount": "20000",
+      "rho": "0x075b4538f4d89231fcb942a56126d9688604f23c96c3235d3f80ad21199175a4",
+      "pkHash": "0x000000000000000000000000000000000000000000000000000000000000000b",
+      "nullifierSecret": "0x1582fe86649fb2e809463fec975c35c72dc4a828100d90613dd7036b87980005",
+      "commitment": "0xad5226f4373b83ab98199fb8128a2506d02bf4828caf04e74e32aba28c6e55d5",
+      "leafIndex": 33,
+      "depositBlock": "37783744"
+    }
+  ]
+}

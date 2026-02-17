@@ -19,12 +19,13 @@
   "scripts": {
     "build": "bash scripts/build.sh",
     "prepack": "pnpm run build",
-    "pretest": "pnpm --filter @shielded-x402/shared-types build && pnpm run build",
+    "pretest": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/erc8004-adapter build && pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@shielded-x402/erc8004-adapter": "workspace:^0.1.0",
     "@shielded-x402/shared-types": "workspace:^0.3.0",
     "viem": "^2.39.3"
   },

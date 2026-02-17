@@ -11,6 +11,9 @@
 - `createShieldedFetch({ sdk, resolveContext, fetchImpl?, onUnsupportedRail?, prefetchRequirement?, relayerEndpoint?, relayerPath?, challengeUrlResolver? })`
 - `createShieldedFetch({ ..., onRelayerSettlement? })` (hook for relayer settlement deltas)
 - `createRelayedShieldedFetch(...)` (low-level explicit relayer variant; `createShieldedFetch` is the preferred single entrypoint)
+- `createAgentPaymentFetch({ sdk, directoryClient?, resolveContext, targetPolicy?, requirementAdapters? })`
+- `selectCounterpartyEndpoint(profile, policy?)` (deterministic ranking for fixed trust snapshots)
+- `createGenericX402V2Adapter()` + custom requirement adapter chain support
 - `FileBackedWalletState` (local persistent note + Merkle state indexer)
 - Optional in-process proving:
   - `createNoirJsProofProvider({ noir, backend })`
@@ -19,6 +22,48 @@
   - circuit-backed providers default to `keccakZK` UltraHonk proof settings (matches generated onchain verifier in this repo)
   - override if needed:
     - `createNoirJsProofProviderFromDefaultCircuit({ backendProofOptions: { keccak: true } })` for `evm-no-zk` verifier targets
+
+### ERC-8004 Agent Discovery + A2A Fetch
+
+Use `@shielded-x402/erc8004-adapter` to resolve an ERC-8004 agent profile and route to the best endpoint, while keeping settlement in the existing relayer flow.
+
+```ts
+import {
+  ShieldedClientSDK,
+  createAgentPaymentFetch,
+  createNoirJsProofProviderFromDefaultCircuit
+} from "@shielded-x402/client";
+import {
+  createErc8004DirectoryClient,
+  createEnvioGraphqlProvider,
+  createOnchainRegistryProvider,
+  createScanApiProvider
+} from "@shielded-x402/erc8004-adapter";
+```
+
+Recommended provider order for production:
+
+1. `createEnvioGraphqlProvider` (your own indexer endpoint),
+2. `createOnchainRegistryProvider` (canonical fallback),
+3. `createScanApiProvider` (public fallback).
+
+`createAgentPaymentFetch` target forms:
+
+- `{ type: "url", url }`
+- `{ type: "erc8004", chainId, tokenId, isTestnet? }`
+
+Error codes:
+
+- `E_DIRECTORY_UNAVAILABLE`
+- `E_AGENT_NOT_FOUND`
+- `E_NO_COMPATIBLE_ENDPOINT`
+- `E_402_NORMALIZATION_FAILED`
+- `E_PAYMENT_EXECUTION_FAILED`
+
+Selection determinism:
+
+- deterministic for a fixed profile/trust snapshot
+- tie-break order: protocol preference -> health -> trust score -> last active -> lexical endpoint
 
 ### Plug-and-Play Proof Generation (NoirJS)
 

@@ -11,6 +11,12 @@ import {
   createRelayedShieldedFetch,
   type CreateRelayedShieldedFetchConfig
 } from './relayerFetch.js';
+import {
+  createGenericX402V2Adapter,
+  parseRequirementFrom402Response,
+  rewriteOutgoingHeadersWithAdapters,
+  type RequirementAdapter
+} from './requirementAdapters.js';
 
 export interface ShieldedFetchContext {
   note: ShieldedNote;
@@ -42,6 +48,7 @@ export interface CreateShieldedFetchConfig {
   relayerPath?: string;
   challengeUrlResolver?: (args: { input: string; requirement?: PaymentRequirement }) => string | undefined;
   onRelayerSettlement?: CreateRelayedShieldedFetchConfig['onSettlement'];
+  requirementAdapters?: RequirementAdapter[];
 }
 
 export type ShieldedFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -52,11 +59,13 @@ const normalizeInput = (input: string | URL): string => {
 };
 
 export function createShieldedFetch(config: CreateShieldedFetchConfig): ShieldedFetch {
+  const requirementAdapters = config.requirementAdapters ?? [createGenericX402V2Adapter()];
   if (config.relayerEndpoint) {
     const relayedConfig: CreateRelayedShieldedFetchConfig = {
       sdk: config.sdk,
       relayerEndpoint: config.relayerEndpoint,
-      resolveContext: config.resolveContext
+      resolveContext: config.resolveContext,
+      requirementAdapters
     };
     if (config.onUnsupportedRail) {
       relayedConfig.onUnsupportedRail = config.onUnsupportedRail;
@@ -107,9 +116,14 @@ export function createShieldedFetch(config: CreateShieldedFetchConfig): Shielded
           context.nullifierSecret,
           requestInit.headers
         );
+        const rewrittenHeaders = rewriteOutgoingHeadersWithAdapters(
+          new Headers(prepared.headers),
+          { requestUrl: normalizedInput },
+          requirementAdapters
+        );
         first = await baseFetch(normalizedInput, {
           ...requestInit,
-          headers: prepared.headers
+          headers: rewrittenHeaders
         });
         if (first.status !== 402) {
           return first;
@@ -121,34 +135,45 @@ export function createShieldedFetch(config: CreateShieldedFetchConfig): Shielded
       first = await baseFetch(normalizedInput, requestInit);
     }
     if (first.status !== 402) return first;
-    const parsed = config.sdk.parse402Response(first);
-    if (parsed.requirement.rail !== 'shielded-usdc') {
+    const { response: normalizedChallenge, requirement } = await parseRequirementFrom402Response(
+      first,
+      { requestUrl: normalizedInput },
+      requirementAdapters
+    );
+    if (requirement.rail !== 'shielded-usdc') {
       if (config.onUnsupportedRail) {
         return config.onUnsupportedRail({
           input: normalizedInput,
           init: requestInit,
-          requirement: parsed.requirement,
-          challengeResponse: first
+          requirement,
+          challengeResponse: normalizedChallenge
         });
       }
-      return first;
+      return normalizedChallenge;
     }
 
     const context = await config.resolveContext({
       input: normalizedInput,
       init: requestInit,
-      requirement: parsed.requirement,
-      challengeResponse: first
+      requirement,
+      challengeResponse: normalizedChallenge
     });
 
-    return config.sdk.complete402Payment(
-      normalizedInput,
-      requestInit,
-      parsed.requirement,
+    const prepared = await config.sdk.prepare402Payment(
+      requirement,
       context.note,
       context.witness,
       context.nullifierSecret,
-      baseFetch
+      requestInit.headers
     );
+    const rewrittenHeaders = rewriteOutgoingHeadersWithAdapters(
+      new Headers(prepared.headers),
+      { requestUrl: normalizedInput },
+      requirementAdapters
+    );
+    return baseFetch(normalizedInput, {
+      ...requestInit,
+      headers: rewrittenHeaders
+    });
   };
 }

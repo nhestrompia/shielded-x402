@@ -143,3 +143,76 @@ export interface RelayerPayResponse {
   merchantResult?: RelayerMerchantResult;
   failureReason?: string;
 }
+
+export type ServiceProtocol = 'a2a' | 'mcp' | 'web' | 'oasf' | 'email' | 'ens' | 'did';
+
+export interface CanonicalServiceEndpoint {
+  protocol: ServiceProtocol;
+  url?: string;
+  identifier?: string;
+  version?: string;
+  capabilities?: string[];
+  raw?: Record<string, unknown>;
+}
+
+export type TrustDataSource = 'onchain' | 'indexer' | 'merged';
+
+export interface CanonicalTrustSnapshot {
+  snapshotTimestamp: string;
+  source: TrustDataSource;
+  score?: number;
+  healthStatus?: 'healthy' | 'degraded' | 'unknown';
+  feedbackCount?: number;
+  avgFeedbackScore?: number;
+  lastActiveAt?: string;
+  parseStatus?: 'success' | 'warning' | 'error';
+  raw?: Record<string, unknown>;
+}
+
+export interface CanonicalAgentProfile {
+  chainId: number;
+  tokenId: string;
+  registryAddress?: Hex;
+  ownerAddress?: Hex;
+  name?: string;
+  description?: string;
+  imageUrl?: string;
+  x402Supported?: boolean;
+  services: CanonicalServiceEndpoint[];
+  trust?: CanonicalTrustSnapshot;
+  sourceMetadata: {
+    onchainResolved: boolean;
+    indexerResolved: boolean;
+  };
+  raw?: Record<string, unknown>;
+}
+
+export interface CounterpartyCandidate {
+  endpoint: CanonicalServiceEndpoint;
+  rankScore: number;
+  rejectionReasons: string[];
+  rankScoreBreakdown: Record<string, number>;
+}
+
+export interface CounterpartySelectionResult {
+  selected?: CounterpartyCandidate;
+  candidates: CounterpartyCandidate[];
+}
+
+export type AgentPaymentErrorCode =
+  | 'E_DIRECTORY_UNAVAILABLE'
+  | 'E_AGENT_NOT_FOUND'
+  | 'E_NO_COMPATIBLE_ENDPOINT'
+  | 'E_402_NORMALIZATION_FAILED'
+  | 'E_PAYMENT_EXECUTION_FAILED';
+
+export interface TrustSnapshotMetadata {
+  providerName: string;
+  fetchedAt: string;
+}
+
+export interface RequirementAdapterContext {
+  requestUrl: string;
+  selectedEndpoint?: CanonicalServiceEndpoint;
+  cachedRequirement?: Record<string, unknown>;
+}

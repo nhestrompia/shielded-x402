@@ -9,7 +9,15 @@
 - `services/merchant-gateway/`: Express middleware enforcing shielded x402 payment.
 - `services/payment-relayer/`: Verifies agent-generated proof bundles, settles onchain, and runs payout adapters for merchant-unchanged deployments.
 - `packages/shared-types/`: Canonical crypto constants and payload schemas.
-- `packages/erc8004-adapter/`: Feature-flagged ERC-8004 registry HTTP adapter.
+- `packages/erc8004-adapter/`: ERC-8004 directory client + provider model (onchain canonical identity + optional indexer enrichment).
+- `sdk/client/src/agentPaymentFetch.ts`: High-level A2A wrapper (`url` or `erc8004` target).
+
+## Discovery/trust boundary
+
+- Discovery and counterparty policy run in the SDK.
+- Settlement, nullifier/root checks, and payout execution run in the relayer.
+- Cryptographic validity remains enforced onchain by pool/verifier contracts.
+- Relayer does not apply trust gating to counterparties.
 
 ## HTTP flow
 

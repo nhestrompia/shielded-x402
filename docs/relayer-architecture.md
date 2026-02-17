@@ -8,6 +8,12 @@ Keep merchants on existing x402 behavior while allowing agents to pay privately:
 2. relayer verifies + settles onchain
 3. relayer executes merchant payout adapter
 
+Relayer policy boundary:
+
+- relayer verifies cryptographic and protocol correctness only
+- relayer does not decide trust/reputation policy for counterparties
+- endpoint discovery and trust-based routing are client-SDK concerns
+
 ## Request lifecycle
 
 1. `RECEIVED`: relayer accepts `POST /v1/relay/pay`.
