@@ -166,6 +166,44 @@ function readServices(
   return out;
 }
 
+function createEmptyProfile(
+  id: string,
+  chainId: bigint,
+  tokenId: bigint,
+  blockNumber: bigint,
+  blockTimestamp: bigint
+): AgentIndexProfile {
+  return {
+    id,
+    chainId,
+    tokenId,
+    owner: undefined,
+    agentWallet: undefined,
+    tokenURI: undefined,
+    name: undefined,
+    description: undefined,
+    imageUrl: undefined,
+    active: undefined,
+    x402Supported: undefined,
+    supportedTrust: undefined,
+    a2aEndpoint: undefined,
+    mcpEndpoint: undefined,
+    webEndpoint: undefined,
+    oasfEndpoint: undefined,
+    didIdentifier: undefined,
+    ensIdentifier: undefined,
+    emailIdentifier: undefined,
+    registrationsJson: undefined,
+    feedbackCount: 0n,
+    feedbackScoreSum: 0n,
+    feedbackRevokedCount: 0n,
+    validationCount: 0n,
+    successfulValidationCount: 0n,
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
+  };
+}
+
 async function getOrCreateProfile(
   context: { AgentIndexProfile: { get: (id: string) => Promise<AgentIndexProfile | undefined> } },
   chainId: number | bigint,
@@ -176,18 +214,7 @@ async function getOrCreateProfile(
   const id = profileId(chainId, agentId);
   const existing = await context.AgentIndexProfile.get(id);
   if (existing) return existing;
-  return {
-    id,
-    chainId: toBigInt(chainId),
-    tokenId: toBigInt(agentId),
-    feedbackCount: 0n,
-    feedbackScoreSum: 0n,
-    feedbackRevokedCount: 0n,
-    validationCount: 0n,
-    successfulValidationCount: 0n,
-    lastUpdatedBlock: blockNumber,
-    updatedAt: blockTimestamp
-  };
+  return createEmptyProfile(id, toBigInt(chainId), toBigInt(agentId), blockNumber, blockTimestamp);
 }
 
 function applyRegistrationData(profile: AgentIndexProfile, registration: Record<string, unknown>): AgentIndexProfile {
@@ -215,30 +242,34 @@ function applyRegistrationData(profile: AgentIndexProfile, registration: Record<
 }
 
 IdentityRegistry.Transfer.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const profile = await getOrCreateProfile(
     context,
     event.chainId,
     event.params.tokenId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const owner = lowerAddress(toNullableString(event.params.to));
   const updated: AgentIndexProfile = {
     ...profile,
     ...(owner ? { owner } : {}),
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   context.AgentIndexProfile.set(updated);
 });
 
 IdentityRegistry.Registered.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const profile = await getOrCreateProfile(
     context,
     event.chainId,
     event.params.agentId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const tokenURI = toNullableString(event.params.tokenURI);
   const owner = lowerAddress(toNullableString(event.params.owner));
@@ -246,8 +277,8 @@ IdentityRegistry.Registered.handler(async ({ event, context }) => {
     ...profile,
     ...(tokenURI ? { tokenURI } : {}),
     ...(owner ? { owner } : {}),
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   const registration = parseDataUriJson(tokenURI);
   if (registration) {
@@ -257,19 +288,21 @@ IdentityRegistry.Registered.handler(async ({ event, context }) => {
 });
 
 IdentityRegistry.URIUpdated.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const profile = await getOrCreateProfile(
     context,
     event.chainId,
     event.params.agentId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const tokenURI = toNullableString(event.params.newURI);
   let updated: AgentIndexProfile = {
     ...profile,
     ...(tokenURI ? { tokenURI } : {}),
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   const registration = parseDataUriJson(tokenURI);
   if (registration) {
@@ -279,12 +312,14 @@ IdentityRegistry.URIUpdated.handler(async ({ event, context }) => {
 });
 
 IdentityRegistry.MetadataSet.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const profile = await getOrCreateProfile(
     context,
     event.chainId,
     event.params.agentId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const metadataKey =
     toNullableString(event.params.metadataKey)?.toLowerCase() ??
@@ -292,8 +327,8 @@ IdentityRegistry.MetadataSet.handler(async ({ event, context }) => {
   const metadataValue = bytesHexToUtf8OrHex(event.params.metadataValue);
   let updated: AgentIndexProfile = {
     ...profile,
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   if (metadataKey && metadataValue) {
     if (metadataKey === 'agentwallet') {
@@ -316,6 +351,8 @@ IdentityRegistry.MetadataSet.handler(async ({ event, context }) => {
 });
 
 ReputationRegistry.NewFeedback.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const entity: ReputationRegistry_NewFeedback = {
     id: `${event.chainId}_${event.block.number}_${event.logIndex}`,
     chainId: toBigInt(event.chainId),
@@ -337,20 +374,22 @@ ReputationRegistry.NewFeedback.handler(async ({ event, context }) => {
     context,
     event.chainId,
     event.params.agentId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const updated: AgentIndexProfile = {
     ...profile,
     feedbackCount: profile.feedbackCount + 1n,
     feedbackScoreSum: profile.feedbackScoreSum + toBigInt(event.params.value),
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   context.AgentIndexProfile.set(updated);
 });
 
 ReputationRegistry.FeedbackRevoked.handler(async ({ event, context }) => {
+  const blockNumber = toBigInt(event.block.number);
+  const blockTimestamp = toBigInt(event.block.timestamp);
   const entity: ReputationRegistry_FeedbackRevoked = {
     id: `${event.chainId}_${event.block.number}_${event.logIndex}`,
     chainId: toBigInt(event.chainId),
@@ -364,14 +403,14 @@ ReputationRegistry.FeedbackRevoked.handler(async ({ event, context }) => {
     context,
     event.chainId,
     event.params.agentId,
-    event.block.number,
-    event.block.timestamp
+    blockNumber,
+    blockTimestamp
   );
   const updated: AgentIndexProfile = {
     ...profile,
     feedbackRevokedCount: profile.feedbackRevokedCount + 1n,
-    lastUpdatedBlock: event.block.number,
-    updatedAt: event.block.timestamp
+    lastUpdatedBlock: blockNumber,
+    updatedAt: blockTimestamp
   };
   context.AgentIndexProfile.set(updated);
 });
