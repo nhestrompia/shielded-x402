@@ -16,6 +16,17 @@ const onchainProfile: CanonicalAgentProfile = {
   }
 };
 
+const noUrlProfile: CanonicalAgentProfile = {
+  chainId: 8453,
+  tokenId: '9000',
+  name: 'No URL',
+  services: [{ protocol: 'did', identifier: 'did:example:no-url' }],
+  sourceMetadata: {
+    onchainResolved: true,
+    indexerResolved: false
+  }
+};
+
 const indexerProfile: CanonicalAgentProfile = {
   chainId: 8453,
   tokenId: '1434',
@@ -91,5 +102,78 @@ describe('createErc8004DirectoryClient', () => {
     await client.resolveAgent({ chainId: 8453, tokenId: '1434' });
     await client.resolveAgent({ chainId: 8453, tokenId: '1434' });
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies default protocol/url/x402 filters on resolveAgent', async () => {
+    const client = createErc8004DirectoryClient({
+      providers: [
+        {
+          name: 'mixed',
+          resolveAgent: async () => indexerProfile
+        }
+      ],
+      defaultFilter: {
+        allowedProtocols: ['web'],
+        hasServiceUrl: true,
+        x402Support: 'required_true'
+      }
+    });
+
+    const profile = await client.resolveAgent({ chainId: 8453, tokenId: '1434' });
+    expect(profile).toBeTruthy();
+    expect(profile?.services).toEqual([{ protocol: 'web', url: 'https://agent.example' }]);
+  });
+
+  it('lets per-call filter override default x402 filter', async () => {
+    const client = createErc8004DirectoryClient({
+      providers: [
+        {
+          name: 'profile',
+          resolveAgent: async () => ({ ...indexerProfile, x402Supported: false })
+        }
+      ],
+      defaultFilter: {
+        x402Support: 'required_true'
+      }
+    });
+
+    const blocked = await client.resolveAgent({ chainId: 8453, tokenId: '1434' });
+    expect(blocked).toBeNull();
+
+    const allowed = await client.resolveAgent({
+      chainId: 8453,
+      tokenId: '1434',
+      filter: { x402Support: 'exclude_false' }
+    });
+    expect(allowed).toBeNull();
+
+    const allowAny = await client.resolveAgent({
+      chainId: 8453,
+      tokenId: '1434',
+      filter: { x402Support: 'any' }
+    });
+    expect(allowAny).toBeTruthy();
+  });
+
+  it('applies filters in search results', async () => {
+    const client = createErc8004DirectoryClient({
+      providers: [
+        {
+          name: 'search-provider',
+          resolveAgent: async () => null,
+          search: async () => [indexerProfile, noUrlProfile]
+        }
+      ]
+    });
+
+    const filtered = await client.search({
+      filter: {
+        hasServiceUrl: true,
+        allowedProtocols: ['a2a', 'web']
+      }
+    });
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.tokenId).toBe('1434');
   });
 });

@@ -42,6 +42,22 @@ export class AgentPaymentError extends Error {
   }
 }
 
+function formatErrorWithCause(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const segments: string[] = [error.message];
+  let cursor: unknown = (error as { cause?: unknown }).cause;
+  const visited = new Set<unknown>([error]);
+  while (cursor instanceof Error && !visited.has(cursor)) {
+    visited.add(cursor);
+    segments.push(cursor.message);
+    cursor = (cursor as { cause?: unknown }).cause;
+  }
+  if (cursor !== undefined && !(cursor instanceof Error)) {
+    segments.push(String(cursor));
+  }
+  return segments.filter((value) => value.length > 0).join(' | cause=');
+}
+
 export interface AgentPaymentFetchConfig extends CreateShieldedFetchConfig {
   directoryClient?: Erc8004DirectoryClient;
   targetPolicy?: CounterpartyPolicyConfig;
@@ -279,7 +295,7 @@ export function createAgentPaymentFetch(config: AgentPaymentFetchConfig): AgentP
       resolved = await resolveTargetUrl(target, config);
     } catch (error) {
       if (error instanceof AgentPaymentError) throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatErrorWithCause(error);
       throw new AgentPaymentError(
         'E_PAYMENT_EXECUTION_FAILED',
         message,
@@ -293,10 +309,11 @@ export function createAgentPaymentFetch(config: AgentPaymentFetchConfig): AgentP
       return await shieldedFetch(resolved.url, init);
     } catch (error) {
       if (error instanceof AgentPaymentError) throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatErrorWithCause(error);
       if (message.includes('requirement adapter')) {
         throw new AgentPaymentError('E_402_NORMALIZATION_FAILED', message, {
           target,
+          resolvedUrl: resolved.url,
           ...resolved.context
         });
       }
@@ -305,6 +322,7 @@ export function createAgentPaymentFetch(config: AgentPaymentFetchConfig): AgentP
         message,
         {
           target,
+          resolvedUrl: resolved.url,
           ...resolved.context
         }
       );

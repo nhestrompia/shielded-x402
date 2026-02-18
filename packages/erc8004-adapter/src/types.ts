@@ -1,9 +1,21 @@
-import type { CanonicalAgentProfile, CanonicalTrustSnapshot } from '@shielded-x402/shared-types';
+import type {
+  CanonicalAgentProfile,
+  CanonicalTrustSnapshot,
+  ServiceProtocol
+} from '@shielded-x402/shared-types';
+
+export interface DirectoryProfileFilter {
+  hasServiceUrl?: boolean;
+  allowedProtocols?: ServiceProtocol[];
+  x402Support?: 'any' | 'exclude_false' | 'required_true';
+  predicate?: (profile: CanonicalAgentProfile) => boolean;
+}
 
 export interface ResolveAgentInput {
   chainId: number;
   tokenId: string;
   isTestnet?: boolean;
+  filter?: DirectoryProfileFilter;
 }
 
 export interface SearchAgentsInput {
@@ -12,6 +24,7 @@ export interface SearchAgentsInput {
   query?: string;
   limit?: number;
   offset?: number;
+  filter?: DirectoryProfileFilter;
 }
 
 export interface DirectoryProvider {
@@ -25,6 +38,7 @@ export interface Erc8004DirectoryClientConfig {
   providers: DirectoryProvider[];
   cacheTtlMs?: number;
   fetchImpl?: typeof fetch;
+  defaultFilter?: DirectoryProfileFilter;
 }
 
 export interface Erc8004DirectoryClient {

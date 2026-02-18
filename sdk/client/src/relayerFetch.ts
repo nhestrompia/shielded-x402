@@ -61,6 +61,58 @@ export interface CreateRelayedShieldedFetchConfig {
 
 export type RelayedShieldedFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+function formatErrorWithCause(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const segments: string[] = [error.message];
+  let cursor: unknown = (error as { cause?: unknown }).cause;
+  const visited = new Set<unknown>([error]);
+  while (cursor instanceof Error && !visited.has(cursor)) {
+    visited.add(cursor);
+    segments.push(cursor.message);
+    cursor = (cursor as { cause?: unknown }).cause;
+  }
+  if (cursor !== undefined && !(cursor instanceof Error)) {
+    segments.push(String(cursor));
+  }
+  return segments.filter((value) => value.length > 0).join(' | cause=');
+}
+
+function isRetryableTransportError(error: unknown): boolean {
+  const message = formatErrorWithCause(error).toLowerCase();
+  return (
+    message.includes('econnreset') ||
+    message.includes('socket hang up') ||
+    message.includes('und_err_socket') ||
+    message.includes('other side closed')
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTransportRetry(
+  baseFetch: typeof fetch,
+  url: string,
+  init: RequestInit,
+  attempts = 2
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await baseFetch(url, init);
+    } catch (error) {
+      lastError = error;
+      const canRetry = attempt < attempts && isRetryableTransportError(error);
+      if (!canRetry) {
+        throw error;
+      }
+      await sleep(100 * attempt);
+    }
+  }
+  throw lastError;
+}
+
 function normalizeInput(input: string | URL): string {
   if (typeof input === 'string') return input;
   return input.toString();
@@ -106,13 +158,21 @@ async function requestShieldedRequirementFromRelayer(
     ...(merchantPaymentRequiredHeader ? { merchantPaymentRequiredHeader } : {})
   };
 
-  const response = await baseFetch(`${relayerEndpoint.replace(/\/$/, '')}${relayerChallengePath}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(challengeRequest)
-  });
+  const challengeUrl = `${relayerEndpoint.replace(/\/$/, '')}${relayerChallengePath}`;
+  let response: Response;
+  try {
+    response = await fetchWithTransportRetry(baseFetch, challengeUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        connection: 'close'
+      },
+      body: JSON.stringify(challengeRequest)
+    });
+  } catch (error) {
+    const reason = formatErrorWithCause(error);
+    throw new Error(`relayer challenge transport failed (${challengeUrl}): ${reason}`);
+  }
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`relayer challenge request failed: ${response.status} ${body}`);
@@ -230,7 +290,13 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
         : {})
     };
 
-    const firstRaw = await baseFetch(normalizedInput, serializedToFetchInit(method, serializedRequest));
+    let firstRaw: Response;
+    try {
+      firstRaw = await baseFetch(normalizedInput, serializedToFetchInit(method, serializedRequest));
+    } catch (error) {
+      const reason = formatErrorWithCause(error);
+      throw new Error(`merchant preflight request failed (${normalizedInput}): ${reason}`);
+    }
     const first = await normalizeIncoming402WithAdapters(
       firstRaw,
       { requestUrl: normalizedInput },
@@ -325,13 +391,21 @@ export function createRelayedShieldedFetch(config: CreateRelayedShieldedFetchCon
       paymentSignatureHeader
     };
 
-    const relayerResponse = await baseFetch(`${config.relayerEndpoint.replace(/\/$/, '')}${relayerPath}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify(relayRequest)
-    });
+    const payUrl = `${config.relayerEndpoint.replace(/\/$/, '')}${relayerPath}`;
+    let relayerResponse: Response;
+    try {
+      relayerResponse = await fetchWithTransportRetry(baseFetch, payUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          connection: 'close'
+        },
+        body: JSON.stringify(relayRequest)
+      });
+    } catch (error) {
+      const reason = formatErrorWithCause(error);
+      throw new Error(`relayer pay transport failed (${payUrl}): ${reason}`);
+    }
 
     const relayPayload = (await relayerResponse.json()) as RelayerPayResponse;
     if (config.onSettlement) {
