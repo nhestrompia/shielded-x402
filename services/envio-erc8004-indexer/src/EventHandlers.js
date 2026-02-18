@@ -1,4 +1,5 @@
-import { IdentityRegistry, ReputationRegistry } from 'generated';
+import generated from 'generated';
+const { IdentityRegistry, ReputationRegistry } = generated;
 function profileId(chainId, agentId) {
     return `${chainId}_${String(agentId)}`;
 }

@@ -1,10 +1,14 @@
-import {
-  IdentityRegistry,
-  ReputationRegistry,
-  type AgentIndexProfile,
-  type ReputationRegistry_FeedbackRevoked,
-  type ReputationRegistry_NewFeedback
+import generated from 'generated';
+import type {
+  AgentIndexProfile,
+  ReputationRegistry_FeedbackRevoked,
+  ReputationRegistry_NewFeedback
 } from 'generated';
+
+const { IdentityRegistry, ReputationRegistry } = generated as unknown as {
+  IdentityRegistry: typeof import('generated').IdentityRegistry;
+  ReputationRegistry: typeof import('generated').ReputationRegistry;
+};
 
 function profileId(chainId: number | bigint, agentId: number | bigint | string): string {
   return `${chainId}_${String(agentId)}`;
