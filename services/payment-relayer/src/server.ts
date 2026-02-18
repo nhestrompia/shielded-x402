@@ -33,7 +33,8 @@ function parseStaticHeaders(raw: string | undefined): Record<string, string> {
 }
 
 const app = express();
-app.use(express.json({ limit: '512kb' }));
+const relayerJsonLimit = process.env.RELAYER_JSON_LIMIT ?? '50mb';
+app.use(express.json({ limit: relayerJsonLimit }));
 
 const rpcUrl = process.env.RELAYER_RPC_URL ?? process.env.SEPOLIA_RPC_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined;
@@ -129,7 +130,8 @@ app.get('/health', (_req, res) => {
     payoutMode,
     x402PayoutEnabled: payoutMode === 'x402',
     challengeBridgeEnabled: true,
-    storePath
+    storePath,
+    jsonLimit: relayerJsonLimit
   });
 });
 
@@ -168,6 +170,21 @@ app.get(`${RELAYER_ROUTES.statusPrefix}/:settlementId`, async (req, res) => {
     return;
   }
   res.json(record);
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const err = error as { type?: string; status?: number; message?: string };
+  if (err?.type === 'entity.too.large') {
+    res.status(413).json({
+      error: 'request body too large',
+      detail: `Increase RELAYER_JSON_LIMIT (current=${relayerJsonLimit})`
+    });
+    return;
+  }
+  res.status(err?.status ?? 500).json({
+    error: 'relayer server error',
+    detail: err?.message ?? String(error)
+  });
 });
 
 const port = Number(process.env.RELAYER_PORT ?? 3100);

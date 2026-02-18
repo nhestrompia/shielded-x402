@@ -1,23 +1,27 @@
-import 'dotenv/config';
 import {
   FileBackedWalletState,
   ShieldedClientSDK,
   createAgentPaymentFetch,
-  createNoirJsProofProviderFromDefaultCircuit
-} from '@shielded-x402/client';
+  createNoirJsProofProviderFromDefaultCircuit,
+} from "@shielded-x402/client";
 import {
-  createErc8004DirectoryClient,
   createEnvioGraphqlProvider,
+  createErc8004DirectoryClient,
   createOnchainRegistryProvider,
-  createScanApiProvider
-} from '@shielded-x402/erc8004-adapter';
-import { privateKeyToAccount } from 'viem/accounts';
+  createScanApiProvider,
+} from "@shielded-x402/erc8004-adapter";
+import "dotenv/config";
+import { privateKeyToAccount } from "viem/accounts";
 
 const env = process.env;
-const relayerEndpoint = env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
-const payerPrivateKey = (env.PAYER_PRIVATE_KEY ?? '').trim().replace(/^['"]|['"]$/g, '');
+const relayerEndpoint = env.RELAYER_ENDPOINT ?? "http://127.0.0.1:3100";
+const payerPrivateKey = (env.PAYER_PRIVATE_KEY ?? "")
+  .trim()
+  .replace(/^['"]|['"]$/g, "");
 if (!/^0x[0-9a-fA-F]{64}$/.test(payerPrivateKey)) {
-  throw new Error('PAYER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex value (64 hex chars)');
+  throw new Error(
+    "PAYER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex value (64 hex chars)",
+  );
 }
 
 const account = privateKeyToAccount(payerPrivateKey);
@@ -25,24 +29,24 @@ const account = privateKeyToAccount(payerPrivateKey);
 function parseBoolean(value, fallback = false) {
   if (value === undefined) return fallback;
   const normalized = String(value).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return fallback;
 }
 
 function hasX402Challenge(status, headers, bodyText) {
   const paymentRequiredHeader =
-    headers.get('payment-required') ??
-    headers.get('PAYMENT-REQUIRED') ??
-    headers.get('x-payment-required') ??
-    headers.get('X-PAYMENT-REQUIRED');
+    headers.get("payment-required") ??
+    headers.get("PAYMENT-REQUIRED") ??
+    headers.get("x-payment-required") ??
+    headers.get("X-PAYMENT-REQUIRED");
   if (status === 402 && paymentRequiredHeader) return true;
   if (status !== 402) return false;
   try {
     const parsed = JSON.parse(bodyText);
     return (
       parsed &&
-      typeof parsed === 'object' &&
+      typeof parsed === "object" &&
       Number(parsed.x402Version) >= 1 &&
       Array.isArray(parsed.accepts)
     );
@@ -54,13 +58,91 @@ function hasX402Challenge(status, headers, bodyText) {
 function toHttpsUrl(input) {
   try {
     const url = new URL(input);
-    if (url.protocol === 'http:') {
-      url.protocol = 'https:';
+    if (url.protocol === "http:") {
+      url.protocol = "https:";
     }
     return url.toString();
   } catch {
     return undefined;
   }
+}
+
+function parseObjectJson(value) {
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      return parsed;
+  } catch {}
+  return undefined;
+}
+
+function normalizeServiceName(value) {
+  if (typeof value !== "string") return undefined;
+  const name = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "");
+  return name.length > 0 ? name : undefined;
+}
+
+function extractServiceNamesFromRegistration(registration) {
+  const names = new Set();
+  const push = (value) => {
+    const normalized = normalizeServiceName(value);
+    if (normalized) names.add(normalized);
+  };
+
+  const services = registration?.services;
+  if (services && typeof services === "object" && !Array.isArray(services)) {
+    for (const key of Object.keys(services)) push(key);
+  } else if (Array.isArray(services)) {
+    for (const service of services) {
+      if (!service || typeof service !== "object") continue;
+      push(service.name);
+      push(service.id);
+    }
+  }
+
+  const entrypoints = registration?.entrypoints;
+  if (
+    entrypoints &&
+    typeof entrypoints === "object" &&
+    !Array.isArray(entrypoints)
+  ) {
+    for (const key of Object.keys(entrypoints)) push(key);
+  }
+
+  const skills = registration?.skills;
+  if (Array.isArray(skills)) {
+    for (const skill of skills) {
+      if (!skill || typeof skill !== "object") continue;
+      push(skill.id);
+      push(skill.name);
+    }
+  }
+
+  return [...names];
+}
+
+function deriveHttpServiceCandidates(baseUrl, serviceNames) {
+  const candidates = [];
+  const seen = new Set();
+  const push = (value) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    candidates.push(value);
+  };
+
+  push(baseUrl);
+  for (const service of serviceNames) {
+    try {
+      push(new URL(`/api/v1/${service}`, baseUrl).toString());
+    } catch {}
+  }
+
+  return candidates;
 }
 
 function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
@@ -78,10 +160,14 @@ function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
   push(base);
 
   const entrypoints = card.raw?.entrypoints;
-  if (entrypoints && typeof entrypoints === 'object' && !Array.isArray(entrypoints)) {
+  if (
+    entrypoints &&
+    typeof entrypoints === "object" &&
+    !Array.isArray(entrypoints)
+  ) {
     for (const key of Object.keys(entrypoints)) {
       try {
-        push(new URL(`/entrypoints/${key}/invoke`, base).toString());
+        push(new URL(`/api/v1/${key}`, base).toString());
       } catch {}
     }
   }
@@ -89,17 +175,20 @@ function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
   const skills = card.raw?.skills;
   if (Array.isArray(skills)) {
     for (const skill of skills) {
-      if (!skill || typeof skill !== 'object') continue;
-      const id = typeof skill.id === 'string' && skill.id.trim() ? skill.id.trim() : undefined;
+      if (!skill || typeof skill !== "object") continue;
+      const id =
+        typeof skill.id === "string" && skill.id.trim()
+          ? skill.id.trim()
+          : undefined;
       if (!id) continue;
       try {
-        push(new URL(`/entrypoints/${id}/invoke`, base).toString());
+        push(new URL(`/api/v1/${id}`, base).toString());
       } catch {}
     }
   }
 
   for (const profile of card.x402Payments) {
-    if (typeof profile.endpoint === 'string') {
+    if (typeof profile.endpoint === "string") {
       const maybe = toHttpsUrl(profile.endpoint);
       if (maybe) push(maybe);
     }
@@ -112,17 +201,29 @@ function extractX402PaymentsFromCardRaw(rawCard) {
   const payments = Array.isArray(rawCard?.payments) ? rawCard.payments : [];
   const out = [];
   for (const payment of payments) {
-    if (!payment || typeof payment !== 'object') continue;
-    const method = typeof payment.method === 'string' ? payment.method : undefined;
-    if (!method || method.toLowerCase() !== 'x402') continue;
-    const extensions = payment.extensions && typeof payment.extensions === 'object' ? payment.extensions : {};
-    const x402 = extensions.x402 && typeof extensions.x402 === 'object' ? extensions.x402 : {};
+    if (!payment || typeof payment !== "object") continue;
+    const method =
+      typeof payment.method === "string" ? payment.method : undefined;
+    if (!method || method.toLowerCase() !== "x402") continue;
+    const extensions =
+      payment.extensions && typeof payment.extensions === "object"
+        ? payment.extensions
+        : {};
+    const x402 =
+      extensions.x402 && typeof extensions.x402 === "object"
+        ? extensions.x402
+        : {};
     out.push({
       method,
-      payee: typeof payment.payee === 'string' ? payment.payee : undefined,
-      network: typeof payment.network === 'string' ? payment.network : undefined,
-      endpoint: typeof payment.endpoint === 'string' ? payment.endpoint : undefined,
-      facilitatorUrl: typeof x402.facilitatorUrl === 'string' ? x402.facilitatorUrl : undefined
+      payee: typeof payment.payee === "string" ? payment.payee : undefined,
+      network:
+        typeof payment.network === "string" ? payment.network : undefined,
+      endpoint:
+        typeof payment.endpoint === "string" ? payment.endpoint : undefined,
+      facilitatorUrl:
+        typeof x402.facilitatorUrl === "string"
+          ? x402.facilitatorUrl
+          : undefined,
     });
   }
   return out;
@@ -131,12 +232,13 @@ function extractX402PaymentsFromCardRaw(rawCard) {
 async function fetchA2ACard(url) {
   try {
     const response = await fetch(url, {
-      method: 'GET',
-      headers: { accept: 'application/json' }
+      method: "GET",
+      headers: { accept: "application/json" },
     });
     if (!response.ok) return undefined;
     const parsed = await response.json().catch(() => undefined);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return undefined;
     return parsed;
   } catch {
     return undefined;
@@ -145,12 +247,15 @@ async function fetchA2ACard(url) {
 
 async function probeCandidate(url) {
   const attempts = [
-    { method: 'GET' },
+    { method: "GET" },
     {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ input: { question: 'x402 probe' } })
-    }
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({ input: { question: "x402 probe" } }),
+    },
   ];
 
   for (const attempt of attempts) {
@@ -158,58 +263,79 @@ async function probeCandidate(url) {
       const response = await fetch(url, attempt);
       const body = await response.text();
       if (hasX402Challenge(response.status, response.headers, body)) {
-        return { kind: 'x402', method: attempt.method, status: response.status };
+        return {
+          kind: "x402",
+          method: attempt.method,
+          status: response.status,
+        };
       }
       if (response.ok) {
-        return { kind: 'free', method: attempt.method, status: response.status };
+        return {
+          kind: "free",
+          method: attempt.method,
+          status: response.status,
+        };
       }
     } catch {}
   }
 
-  return { kind: 'unreachable' };
+  return { kind: "unreachable" };
 }
 
 async function discoverPayableRouteForProfile(profile) {
-  const orderedProtocols = ['a2a', 'web', 'mcp', 'oasf'];
+  const orderedProtocols = ["a2a", "web", "mcp", "oasf"];
   const services = [...profile.services].sort((a, b) => {
     const ai = orderedProtocols.indexOf(a.protocol);
     const bi = orderedProtocols.indexOf(b.protocol);
-    return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) - (bi < 0 ? Number.MAX_SAFE_INTEGER : bi);
+    return (
+      (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) -
+      (bi < 0 ? Number.MAX_SAFE_INTEGER : bi)
+    );
   });
 
   for (const service of services) {
     const serviceUrl = service.url ? toHttpsUrl(service.url) : undefined;
     if (!serviceUrl) continue;
+    const serviceNames = extractServiceNamesFromRegistration(
+      parseObjectJson(profile?.raw?.registrationsJson),
+    );
 
-    if (service.protocol === 'a2a') {
+    if (service.protocol === "a2a") {
       const cardRaw = await fetchA2ACard(serviceUrl);
       if (!cardRaw) continue;
       const cardLike = {
         raw: cardRaw,
-        x402Payments: extractX402PaymentsFromCardRaw(cardRaw)
+        x402Payments: extractX402PaymentsFromCardRaw(cardRaw),
       };
       const candidates = deriveA2AInvokeCandidates({
         card: cardLike,
-        selectedEndpoint: { protocol: 'a2a', url: serviceUrl }
+        selectedEndpoint: { protocol: "a2a", url: serviceUrl },
       });
       for (const candidate of candidates) {
         const probe = await probeCandidate(candidate);
         console.log(
-          `[discovery-probe] token=${profile.tokenId} protocol=a2a url=${candidate} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ''}`
+          `[discovery-probe] token=${profile.tokenId} protocol=a2a url=${candidate} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ""}`,
         );
-        if (probe.kind === 'x402') {
-          return { invokeUrl: candidate, protocol: 'a2a' };
+        if (probe.kind === "x402") {
+          return { invokeUrl: candidate, protocol: "a2a" };
         }
       }
       continue;
     }
 
-    const probe = await probeCandidate(serviceUrl);
-    console.log(
-      `[discovery-probe] token=${profile.tokenId} protocol=${service.protocol} url=${serviceUrl} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ''}`
-    );
-    if (probe.kind === 'x402') {
-      return { invokeUrl: serviceUrl, protocol: service.protocol };
+    const candidateUrls =
+      service.protocol === "web"
+        ? deriveHttpServiceCandidates(serviceUrl, serviceNames)
+        : [serviceUrl];
+
+    for (const candidate of candidateUrls) {
+      const probe = await probeCandidate(candidate);
+      console.log(
+        `[discovery-probe] token=${profile.tokenId} protocol=${service.protocol} url=${candidate} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ""}`,
+      );
+      if (probe.kind === "x402") {
+        return { invokeUrl: candidate, protocol: service.protocol };
+      }
     }
   }
 
@@ -221,21 +347,28 @@ async function discoverTokenIdFromDirectory(
   chainId,
   isTestnet,
   requirePayable,
-  discoveredRouteByTokenId
+  discoveredRouteByTokenId,
 ) {
   const batch = await directoryClient.search({
     chainId,
     isTestnet,
     limit: 100,
-    offset: 0
+    offset: 0,
   });
 
   const ranked = batch
-    .filter((profile) => profile.x402Supported === true)
     .filter((profile) => profile.services.some((service) => service.url))
     .sort((a, b) => {
-      const aHasA2A = a.services.some((service) => service.protocol === 'a2a' && service.url) ? 1 : 0;
-      const bHasA2A = b.services.some((service) => service.protocol === 'a2a' && service.url) ? 1 : 0;
+      const aHasA2A = a.services.some(
+        (service) => service.protocol === "a2a" && service.url,
+      )
+        ? 1
+        : 0;
+      const bHasA2A = b.services.some(
+        (service) => service.protocol === "a2a" && service.url,
+      )
+        ? 1
+        : 0;
       if (aHasA2A !== bHasA2A) return bHasA2A - aHasA2A;
       const aTrust = a.trust?.score ?? 0;
       const bTrust = b.trust?.score ?? 0;
@@ -257,7 +390,7 @@ async function discoverTokenIdFromDirectory(
     if (!payable) continue;
     discoveredRouteByTokenId.set(profile.tokenId, payable);
     console.log(
-      `[discovery] selected payable token=${profile.tokenId} protocol=${payable.protocol} invoke=${payable.invokeUrl}`
+      `[discovery] selected payable token=${profile.tokenId} protocol=${payable.protocol} invoke=${payable.invokeUrl}`,
     );
     return profile.tokenId;
   }
@@ -268,51 +401,63 @@ async function discoverTokenIdFromDirectory(
 const sdk = new ShieldedClientSDK({
   endpoint: relayerEndpoint,
   signer: async (message) => account.signMessage({ message }),
-  proofProvider: await createNoirJsProofProviderFromDefaultCircuit()
+  proofProvider: await createNoirJsProofProviderFromDefaultCircuit(),
 });
 
 const wallet = await FileBackedWalletState.create({
-  filePath: env.WALLET_STATE_PATH ?? './wallet-state.json',
+  filePath: env.WALLET_STATE_PATH ?? "./wallet-state.json",
   shieldedPoolAddress: env.SHIELDED_POOL_ADDRESS,
-  ...(env.WALLET_INDEXER_URL ? { indexerGraphqlUrl: env.WALLET_INDEXER_URL } : {}),
+  ...(env.WALLET_INDEXER_URL
+    ? { indexerGraphqlUrl: env.WALLET_INDEXER_URL }
+    : {}),
   ...(env.POOL_RPC_URL ? { rpcUrl: env.POOL_RPC_URL } : {}),
-  ...(env.POOL_FROM_BLOCK ? { startBlock: BigInt(env.POOL_FROM_BLOCK) } : {})
+  ...(env.POOL_FROM_BLOCK ? { startBlock: BigInt(env.POOL_FROM_BLOCK) } : {}),
 });
 
 const providers = [];
 if (env.ERC8004_ENVIO_GRAPHQL_URL) {
   providers.push(
     createEnvioGraphqlProvider({
-      endpointUrl: env.ERC8004_ENVIO_GRAPHQL_URL
-    })
+      endpointUrl: env.ERC8004_ENVIO_GRAPHQL_URL,
+    }),
   );
 }
-if (env.ERC8004_REGISTRY_ADDRESS && env.ERC8004_RPC_URL && env.ERC8004_CHAIN_ID) {
+if (
+  env.ERC8004_REGISTRY_ADDRESS &&
+  env.ERC8004_RPC_URL &&
+  env.ERC8004_CHAIN_ID
+) {
   providers.push(
     createOnchainRegistryProvider({
       registryByChain: {
-        [Number(env.ERC8004_CHAIN_ID)]: env.ERC8004_REGISTRY_ADDRESS
+        [Number(env.ERC8004_CHAIN_ID)]: env.ERC8004_REGISTRY_ADDRESS,
       },
       rpcUrlByChain: {
-        [Number(env.ERC8004_CHAIN_ID)]: env.ERC8004_RPC_URL
-      }
-    })
+        [Number(env.ERC8004_CHAIN_ID)]: env.ERC8004_RPC_URL,
+      },
+    }),
   );
 }
 if (env.ERC8004_SCAN_API_URL) {
   providers.push(
     createScanApiProvider({
-      baseUrl: env.ERC8004_SCAN_API_URL
-    })
+      baseUrl: env.ERC8004_SCAN_API_URL,
+    }),
   );
 }
 
-const directoryClient = providers.length > 0 ? createErc8004DirectoryClient({ providers }) : undefined;
+const directoryClient =
+  providers.length > 0
+    ? createErc8004DirectoryClient({ providers })
+    : undefined;
 const a2aInvokeUrl = env.A2A_INVOKE_URL;
-const chainId = Number(env.ERC8004_CHAIN_ID ?? '84532');
+const chainId = Number(env.ERC8004_CHAIN_ID ?? "84532");
 const isTestnet = parseBoolean(env.ERC8004_IS_TESTNET, chainId !== 8453);
 const requireA2AX402 = parseBoolean(env.A2A_REQUIRE_X402, true);
-const discoveryRequirePayable = parseBoolean(env.DISCOVERY_REQUIRE_PAYABLE, true);
+const discoveryRequirePayable = parseBoolean(
+  env.DISCOVERY_REQUIRE_PAYABLE,
+  true,
+);
 let discoveredTokenId = env.ERC8004_TOKEN_ID;
 const discoveredRouteByTokenId = new Map();
 let settlementApplied = false;
@@ -320,20 +465,23 @@ const agentPaymentFetch = createAgentPaymentFetch({
   sdk,
   relayerEndpoint,
   ...(directoryClient ? { directoryClient } : {}),
+  targetPolicy: {
+    requireX402Support: false,
+  },
   onA2ACardResolved: async ({ selectedEndpoint, card }) => {
     console.log(
-      `[a2a-card] endpoint=${selectedEndpoint.url ?? 'n/a'} name=${card.name ?? 'unknown'} x402Profiles=${card.x402Payments.length}`
+      `[a2a-card] endpoint=${selectedEndpoint.url ?? "n/a"} name=${card.name ?? "unknown"} x402Profiles=${card.x402Payments.length}`,
     );
     for (const [index, payment] of card.x402Payments.entries()) {
       console.log(
-        `[a2a-card:x402:${index}] payee=${payment.payee ?? 'n/a'} network=${payment.network ?? 'n/a'} facilitator=${payment.facilitatorUrl ?? payment.endpoint ?? 'n/a'}`
+        `[a2a-card:x402:${index}] payee=${payment.payee ?? "n/a"} network=${payment.network ?? "n/a"} facilitator=${payment.facilitatorUrl ?? payment.endpoint ?? "n/a"}`,
       );
     }
   },
   resolveA2AInvokeTarget: async ({ target, selectedEndpoint, card }) => {
     if (a2aInvokeUrl) return a2aInvokeUrl;
     const discovered = discoveredRouteByTokenId.get(target.tokenId);
-    if (discovered?.invokeUrl && discovered.protocol === 'a2a') {
+    if (discovered?.invokeUrl && discovered.protocol === "a2a") {
       return discovered.invokeUrl;
     }
 
@@ -341,16 +489,16 @@ const agentPaymentFetch = createAgentPaymentFetch({
     for (const candidate of candidates) {
       const probe = await probeCandidate(candidate);
       console.log(
-        `[a2a-probe] url=${candidate} kind=${probe.kind}${probe.method ? ` method=${probe.method}` : ''}${probe.status ? ` status=${probe.status}` : ''}`
+        `[a2a-probe] url=${candidate} kind=${probe.kind}${probe.method ? ` method=${probe.method}` : ""}${probe.status ? ` status=${probe.status}` : ""}`,
       );
-      if (probe.kind === 'x402') {
+      if (probe.kind === "x402") {
         return candidate;
       }
     }
 
     if (requireA2AX402) {
       throw new Error(
-        'discovered A2A endpoint did not expose an x402 challenge on tested invoke candidates'
+        "discovered A2A endpoint did not expose an x402 challenge on tested invoke candidates",
       );
     }
 
@@ -360,11 +508,15 @@ const agentPaymentFetch = createAgentPaymentFetch({
     const sync = await wallet.sync();
     const spendable = wallet
       .getNotes()
-      .filter((note) => !note.spent && note.amount >= BigInt(requirement.amount))
-      .sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
+      .filter(
+        (note) => !note.spent && note.amount >= BigInt(requirement.amount),
+      )
+      .sort((a, b) =>
+        a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0,
+      )[0];
     if (!spendable) {
       throw new Error(
-        `no spendable note found | requirement.amount=${requirement.amount} | syncedTo=${sync.toBlock}`
+        `no spendable note found | requirement.amount=${requirement.amount} | syncedTo=${sync.toBlock}`,
       );
     }
     return wallet.getSpendContextByCommitment(spendable.commitment);
@@ -373,13 +525,13 @@ const agentPaymentFetch = createAgentPaymentFetch({
     await wallet.applyRelayerSettlement({
       settlementDelta: relayResponse.settlementDelta,
       changeNote: prepared.changeNote,
-      changeNullifierSecret: prepared.changeNullifierSecret
+      changeNullifierSecret: prepared.changeNullifierSecret,
     });
     settlementApplied = true;
     console.log(
-      `[settlement] status=${relayResponse.status} settlementId=${relayResponse.settlementId} tx=${relayResponse.settlementTxHash ?? 'n/a'}`
+      `[settlement] status=${relayResponse.status} settlementId=${relayResponse.settlementId} tx=${relayResponse.settlementTxHash ?? "n/a"}`,
     );
-  }
+  },
 });
 
 if (!env.TARGET_URL && !discoveredTokenId && directoryClient) {
@@ -388,51 +540,55 @@ if (!env.TARGET_URL && !discoveredTokenId && directoryClient) {
     chainId,
     isTestnet,
     discoveryRequirePayable,
-    discoveredRouteByTokenId
+    discoveredRouteByTokenId,
   );
   if (discoveredTokenId) {
-    console.log(`[discovery] auto-selected ERC8004_TOKEN_ID=${discoveredTokenId}`);
+    console.log(
+      `[discovery] auto-selected ERC8004_TOKEN_ID=${discoveredTokenId}`,
+    );
   }
 }
 
 const discoveredRoute =
-  !env.TARGET_URL && discoveredTokenId ? discoveredRouteByTokenId.get(discoveredTokenId) : undefined;
+  !env.TARGET_URL && discoveredTokenId
+    ? discoveredRouteByTokenId.get(discoveredTokenId)
+    : undefined;
 
 const target = env.TARGET_URL
-  ? { type: 'url', url: env.TARGET_URL }
+  ? { type: "url", url: env.TARGET_URL }
   : discoveredRoute?.invokeUrl
-    ? { type: 'url', url: discoveredRoute.invokeUrl }
-  : {
-      type: 'erc8004',
-      chainId,
-      tokenId: discoveredTokenId
-    };
+    ? { type: "url", url: discoveredRoute.invokeUrl }
+    : {
+        type: "erc8004",
+        chainId,
+        tokenId: discoveredTokenId,
+      };
 
 if (discoveredRoute?.invokeUrl) {
   console.log(
-    `[discovery] using payable invoke URL discovered via ERC-8004 token=${discoveredTokenId} protocol=${discoveredRoute.protocol}`
+    `[discovery] using payable invoke URL discovered via ERC-8004 token=${discoveredTokenId} protocol=${discoveredRoute.protocol}`,
   );
 }
 
 if (!target.url && !target.tokenId) {
   const guidance = discoveryRequirePayable
     ? [
-        'No x402-payable endpoint was discovered from ERC-8004 profiles.',
-        'Options:',
-        '1) set ERC8004_TOKEN_ID to a known payable agent',
-        '2) set A2A_INVOKE_URL to a known invoke endpoint that returns a 402 x402 challenge',
-        '3) set TARGET_URL to bypass discovery',
-        '4) set DISCOVERY_REQUIRE_PAYABLE=false to allow selecting non-payable/free endpoints'
-      ].join(' ')
-    : 'Set TARGET_URL or ERC8004_TOKEN_ID';
+        "No x402-payable endpoint was discovered from ERC-8004 profiles.",
+        "Options:",
+        "1) set ERC8004_TOKEN_ID to a known payable agent",
+        "2) set A2A_INVOKE_URL to a known invoke endpoint that returns a 402 x402 challenge",
+        "3) set TARGET_URL to bypass discovery",
+        "4) set DISCOVERY_REQUIRE_PAYABLE=false to allow selecting non-payable/free endpoints",
+      ].join(" ")
+    : "Set TARGET_URL or ERC8004_TOKEN_ID";
   throw new Error(guidance);
 }
 
-const response = await agentPaymentFetch(target, { method: 'GET' });
+const response = await agentPaymentFetch(target, { method: "GET" });
 const text = await response.text();
 console.log(`[result] status=${response.status}`);
 console.log(`[result] settlement-applied=${settlementApplied}`);
 console.log(
-  `[result] relayer-settlement-id=${response.headers.get('x-relayer-settlement-id') ?? 'n/a'}`
+  `[result] relayer-settlement-id=${response.headers.get("x-relayer-settlement-id") ?? "n/a"}`,
 );
 console.log(text);

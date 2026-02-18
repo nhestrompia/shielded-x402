@@ -91,7 +91,7 @@ export function selectCounterpartyEndpoint(
 ): CounterpartySelectionResult {
   const options = {
     requireHttps: policy.requireHttps ?? true,
-    requireX402Support: policy.requireX402Support ?? true,
+    requireX402Support: policy.requireX402Support ?? false,
     ...policy
   };
 

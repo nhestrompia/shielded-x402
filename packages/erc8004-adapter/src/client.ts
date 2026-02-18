@@ -6,6 +6,7 @@ import type {
 import type {
   Erc8004DirectoryClient,
   Erc8004DirectoryClientConfig,
+  DirectoryProfileFilter,
   ResolveAgentInput,
   SearchAgentsInput
 } from './types.js';
@@ -13,6 +14,76 @@ import type {
 interface CacheEntry {
   expiresAt: number;
   value: CanonicalAgentProfile | null;
+}
+
+function mergeProfileFilters(
+  defaultFilter: DirectoryProfileFilter | undefined,
+  inputFilter: DirectoryProfileFilter | undefined
+): DirectoryProfileFilter | undefined {
+  if (!defaultFilter && !inputFilter) return undefined;
+
+  const defaultPredicate = defaultFilter?.predicate;
+  const inputPredicate = inputFilter?.predicate;
+  const predicate =
+    defaultPredicate && inputPredicate
+      ? (profile: CanonicalAgentProfile) => defaultPredicate(profile) && inputPredicate(profile)
+      : inputPredicate ?? defaultPredicate;
+
+  const merged: DirectoryProfileFilter = {
+    x402Support: inputFilter?.x402Support ?? defaultFilter?.x402Support ?? 'any'
+  };
+
+  const hasServiceUrl = inputFilter?.hasServiceUrl ?? defaultFilter?.hasServiceUrl;
+  if (hasServiceUrl !== undefined) {
+    merged.hasServiceUrl = hasServiceUrl;
+  }
+
+  const allowedProtocols = inputFilter?.allowedProtocols ?? defaultFilter?.allowedProtocols;
+  if (allowedProtocols !== undefined) {
+    merged.allowedProtocols = allowedProtocols;
+  }
+
+  if (predicate) {
+    merged.predicate = predicate;
+  }
+
+  return merged;
+}
+
+function applyProfileFilter(
+  profile: CanonicalAgentProfile | null,
+  filter: DirectoryProfileFilter | undefined
+): CanonicalAgentProfile | null {
+  if (!profile || !filter) return profile;
+
+  let filtered = profile;
+  if (filter.allowedProtocols && filter.allowedProtocols.length > 0) {
+    const allowedProtocols = new Set(filter.allowedProtocols);
+    const services = filtered.services.filter((service) => allowedProtocols.has(service.protocol));
+    if (services.length === 0) return null;
+    filtered = services.length === filtered.services.length ? filtered : { ...filtered, services };
+  }
+
+  if (filter.hasServiceUrl) {
+    const hasServiceUrl = filtered.services.some(
+      (service) => typeof service.url === 'string' && service.url.trim().length > 0
+    );
+    if (!hasServiceUrl) return null;
+  }
+
+  if (filter.x402Support === 'required_true' && filtered.x402Supported !== true) {
+    return null;
+  }
+
+  if (filter.x402Support === 'exclude_false' && filtered.x402Supported === false) {
+    return null;
+  }
+
+  if (filter.predicate && !filter.predicate(filtered)) {
+    return null;
+  }
+
+  return filtered;
 }
 
 function keyForResolve(input: ResolveAgentInput): string {
@@ -165,10 +236,11 @@ export function createErc8004DirectoryClient(
 
   return {
     resolveAgent: async (input: ResolveAgentInput): Promise<CanonicalAgentProfile | null> => {
+      const effectiveFilter = mergeProfileFilters(config.defaultFilter, input.filter);
       const cacheKey = keyForResolve(input);
       const cached = resolveCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
-        return cached.value;
+        return applyProfileFilter(cached.value, effectiveFilter);
       }
 
       const resolvedProfiles: CanonicalAgentProfile[] = [];
@@ -200,10 +272,11 @@ export function createErc8004DirectoryClient(
         value: merged,
         expiresAt: Date.now() + cacheTtlMs
       });
-      return merged;
+      return applyProfileFilter(merged, effectiveFilter);
     },
 
     search: async (input: SearchAgentsInput): Promise<CanonicalAgentProfile[]> => {
+      const effectiveFilter = mergeProfileFilters(config.defaultFilter, input.filter);
       const byId = new Map<string, CanonicalAgentProfile[]>();
       const providerErrors: string[] = [];
 
@@ -230,6 +303,7 @@ export function createErc8004DirectoryClient(
 
       return [...byId.values()]
         .map((bucket) => mergeProfiles(bucket))
+        .map((profile) => applyProfileFilter(profile, effectiveFilter))
         .filter((value): value is CanonicalAgentProfile => Boolean(value));
     }
   };
