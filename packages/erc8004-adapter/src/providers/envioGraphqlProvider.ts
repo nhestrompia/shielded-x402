@@ -41,11 +41,16 @@ interface AgentIndexRow {
   updatedAt?: string | number | null;
 }
 
-type ResolvePayload = { data?: { agentIndexProfiles?: AgentIndexRow[] }; errors?: Array<{ message?: string }> };
+const TABLE_FIELD_CANDIDATES = [
+  'agentIndexProfiles',
+  'agent_index_profiles',
+  'AgentIndexProfile',
+  'AgentIndexProfiles'
+] as const;
 
-const RESOLVE_QUERY = `
+const RESOLVE_QUERY_TEMPLATE = `
 query ResolveAgent($chainId: BigInt!, $tokenId: BigInt!) {
-  agentIndexProfiles(where: { chainId: { _eq: $chainId }, tokenId: { _eq: $tokenId } }, limit: 1) {
+  rows: __TABLE_FIELD__(where: { chainId: { _eq: $chainId }, tokenId: { _eq: $tokenId } }, limit: 1) {
     chainId
     tokenId
     owner
@@ -76,9 +81,9 @@ query ResolveAgent($chainId: BigInt!, $tokenId: BigInt!) {
 }
 `;
 
-const SEARCH_QUERY = `
+const SEARCH_QUERY_TEMPLATE = `
 query SearchAgents($limit: Int!, $offset: Int!, $chainId: BigInt) {
-  agentIndexProfiles(
+  rows: __TABLE_FIELD__(
     limit: $limit,
     offset: $offset,
     order_by: [{ updatedAt: desc }],
@@ -114,9 +119,9 @@ query SearchAgents($limit: Int!, $offset: Int!, $chainId: BigInt) {
 }
 `;
 
-const SEARCH_QUERY_ALL_CHAINS = `
+const SEARCH_QUERY_ALL_CHAINS_TEMPLATE = `
 query SearchAgentsAllChains($limit: Int!, $offset: Int!) {
-  agentIndexProfiles(
+  rows: __TABLE_FIELD__(
     limit: $limit,
     offset: $offset,
     order_by: [{ updatedAt: desc }]
@@ -150,6 +155,13 @@ query SearchAgentsAllChains($limit: Int!, $offset: Int!) {
   }
 }
 `;
+
+interface GraphqlRowsPayload {
+  data?: {
+    rows?: AgentIndexRow[];
+  };
+  errors?: Array<{ message?: string }>;
+}
 
 function toStringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -298,8 +310,49 @@ async function postGraphql<T>(
   }
 }
 
-function hasErrors(payload: ResolvePayload): boolean {
+function hasErrors(payload: { errors?: Array<{ message?: string }> }): boolean {
   return Array.isArray(payload.errors) && payload.errors.length > 0;
+}
+
+function isUnknownQueryFieldError(payload: GraphqlRowsPayload): boolean {
+  const errors = payload.errors ?? [];
+  return errors.some((entry) => {
+    const message = (entry.message ?? '').toLowerCase();
+    const isHasuraMissingField =
+      message.includes('field') && message.includes('not found') && message.includes('query_root');
+    const isGraphqlMissingField =
+      message.includes('cannot query field') && message.includes('on type') && message.includes('query_root');
+    return isHasuraMissingField || isGraphqlMissingField;
+  });
+}
+
+function withTableField(template: string, tableField: string): string {
+  return template.replaceAll('__TABLE_FIELD__', tableField);
+}
+
+async function postGraphqlWithTableFallback(
+  fetchImpl: typeof fetch,
+  endpointUrl: string,
+  timeoutMs: number,
+  queryTemplate: string,
+  variables: Record<string, unknown>
+): Promise<GraphqlRowsPayload> {
+  let lastPayload: GraphqlRowsPayload | undefined;
+
+  for (const tableField of TABLE_FIELD_CANDIDATES) {
+    const payload = await postGraphql<GraphqlRowsPayload>(
+      fetchImpl,
+      endpointUrl,
+      timeoutMs,
+      withTableField(queryTemplate, tableField),
+      variables
+    );
+    lastPayload = payload;
+    if (!hasErrors(payload)) return payload;
+    if (!isUnknownQueryFieldError(payload)) return payload;
+  }
+
+  return lastPayload ?? {};
 }
 
 function filterProfilesByQuery(profiles: CanonicalAgentProfile[], query: string): CanonicalAgentProfile[] {
@@ -321,11 +374,11 @@ export function createEnvioGraphqlProvider(config: EnvioGraphqlProviderConfig): 
     name: 'envio-graphql',
 
     resolveAgent: async (input: ResolveAgentInput): Promise<CanonicalAgentProfile | null> => {
-      const payload = await postGraphql<ResolvePayload>(
+      const payload = await postGraphqlWithTableFallback(
         fetchImpl,
         config.endpointUrl,
         timeoutMs,
-        RESOLVE_QUERY,
+        RESOLVE_QUERY_TEMPLATE,
         { chainId: String(input.chainId), tokenId: input.tokenId }
       );
 
@@ -334,17 +387,17 @@ export function createEnvioGraphqlProvider(config: EnvioGraphqlProviderConfig): 
         throw new Error(`envio graphql resolve error: ${message}`);
       }
 
-      const row = payload.data?.agentIndexProfiles?.[0];
+      const row = payload.data?.rows?.[0];
       if (!row) return null;
       return mapRow(row);
     },
 
     search: async (input: SearchAgentsInput): Promise<CanonicalAgentProfile[]> => {
-      const payload = await postGraphql<ResolvePayload>(
+      const payload = await postGraphqlWithTableFallback(
         fetchImpl,
         config.endpointUrl,
         timeoutMs,
-        input.chainId !== undefined ? SEARCH_QUERY : SEARCH_QUERY_ALL_CHAINS,
+        input.chainId !== undefined ? SEARCH_QUERY_TEMPLATE : SEARCH_QUERY_ALL_CHAINS_TEMPLATE,
         input.chainId !== undefined
           ? {
               limit: input.limit ?? 20,
@@ -362,7 +415,7 @@ export function createEnvioGraphqlProvider(config: EnvioGraphqlProviderConfig): 
         throw new Error(`envio graphql search error: ${message}`);
       }
 
-      const rows = payload.data?.agentIndexProfiles ?? [];
+      const rows = payload.data?.rows ?? [];
       const profiles = rows.map(mapRow).filter((entry): entry is CanonicalAgentProfile => Boolean(entry));
       if (input.query) {
         return filterProfilesByQuery(profiles, input.query);

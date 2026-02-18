@@ -15,9 +15,9 @@ import { privateKeyToAccount } from 'viem/accounts';
 
 const env = process.env;
 const relayerEndpoint = env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
-const payerPrivateKey = env.PAYER_PRIVATE_KEY;
-if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
-  throw new Error('PAYER_PRIVATE_KEY is required');
+const payerPrivateKey = (env.PAYER_PRIVATE_KEY ?? '').trim().replace(/^['"]|['"]$/g, '');
+if (!/^0x[0-9a-fA-F]{64}$/.test(payerPrivateKey)) {
+  throw new Error('PAYER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex value (64 hex chars)');
 }
 
 const account = privateKeyToAccount(payerPrivateKey);
@@ -415,7 +415,17 @@ if (discoveredRoute?.invokeUrl) {
 }
 
 if (!target.url && !target.tokenId) {
-  throw new Error('Set TARGET_URL or ERC8004_TOKEN_ID');
+  const guidance = discoveryRequirePayable
+    ? [
+        'No x402-payable endpoint was discovered from ERC-8004 profiles.',
+        'Options:',
+        '1) set ERC8004_TOKEN_ID to a known payable agent',
+        '2) set A2A_INVOKE_URL to a known invoke endpoint that returns a 402 x402 challenge',
+        '3) set TARGET_URL to bypass discovery',
+        '4) set DISCOVERY_REQUIRE_PAYABLE=false to allow selecting non-payable/free endpoints'
+      ].join(' ')
+    : 'Set TARGET_URL or ERC8004_TOKEN_ID';
+  throw new Error(guidance);
 }
 
 const response = await agentPaymentFetch(target, { method: 'GET' });

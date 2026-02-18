@@ -7,7 +7,7 @@ describe('createEnvioGraphqlProvider', () => {
       return new Response(
         JSON.stringify({
           data: {
-            agentIndexProfiles: [
+            rows: [
               {
                 chainId: '84532',
                 tokenId: '813',
@@ -49,7 +49,7 @@ describe('createEnvioGraphqlProvider', () => {
       return new Response(
         JSON.stringify({
           data: {
-            agentIndexProfiles: [
+            rows: [
               {
                 chainId: '84532',
                 tokenId: '813',
