@@ -7,9 +7,10 @@ This repo can be consumed directly from GitHub, but npm is the right path for pl
 Publish in this order:
 
 1. `@shielded-x402/shared-types`
-2. `@shielded-x402/client`
+2. `@shielded-x402/erc8004-adapter`
+3. `@shielded-x402/client`
 
-`@shielded-x402/client` depends on `@shielded-x402/shared-types` and bundles the default Noir circuit artifact.
+`@shielded-x402/client` depends on both `@shielded-x402/shared-types` and `@shielded-x402/erc8004-adapter`, and bundles the default Noir circuit artifact.
 
 ## Pre-publish Validation
 
@@ -20,6 +21,7 @@ pnpm typecheck
 pnpm test
 pnpm e2e:anvil
 pnpm --filter @shielded-x402/shared-types pack
+pnpm --filter @shielded-x402/erc8004-adapter pack
 pnpm --filter @shielded-x402/client pack
 ```
 
@@ -31,11 +33,16 @@ npm login
 pnpm publish:packages
 ```
 
+For scoped packages like `@shielded-x402/erc8004-adapter`, you do not need to pre-create them on npmjs.com.  
+The first successful `npm publish --access public` creates the package entry under your scope.
+
 This command:
 
-1. builds `@shielded-x402/shared-types` and `@shielded-x402/client`
-2. packs both with `pnpm pack` (workspace deps are rewritten to semver)
-3. publishes tarballs with `npm publish <tarball>`
+1. builds `@shielded-x402/shared-types`
+2. builds `@shielded-x402/erc8004-adapter`
+3. builds `@shielded-x402/client`
+4. packs all three with `pnpm pack` (workspace deps are rewritten to semver)
+5. publishes tarballs with `npm publish <tarball>` (and skips versions that are already published)
 
 Dry-run:
 
@@ -63,6 +70,7 @@ Bump versions before publishing:
 
 ```bash
 cd packages/shared-types && npm version <new-version> --no-git-tag-version
+cd ../erc8004-adapter && npm version <new-version> --no-git-tag-version
 cd ../../sdk/client && npm version <new-version> --no-git-tag-version
 ```
 
