@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createEnvioGraphqlProvider } from './envioGraphqlProvider.js';
+import { createIndexerProvider } from './envioGraphqlProvider.js';
 
-describe('createEnvioGraphqlProvider', () => {
+describe('createIndexerProvider', () => {
   it('maps resolveAgent response into canonical profile', async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(
@@ -29,7 +29,7 @@ describe('createEnvioGraphqlProvider', () => {
       );
     });
 
-    const provider = createEnvioGraphqlProvider({
+    const provider = createIndexerProvider({
       endpointUrl: 'https://indexer.example/v1/graphql',
       fetchImpl
     });
@@ -71,7 +71,7 @@ describe('createEnvioGraphqlProvider', () => {
       );
     });
 
-    const provider = createEnvioGraphqlProvider({
+    const provider = createIndexerProvider({
       endpointUrl: 'https://indexer.example/v1/graphql',
       fetchImpl
     });

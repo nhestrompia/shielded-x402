@@ -1,12 +1,12 @@
 import {
   createCreditChannelClient,
   createCreditShieldedFetch,
-  createNoirJsProofProviderFromDefaultCircuit,
+  createProofProvider,
   FileBackedWalletState,
   ShieldedClientSDK,
 } from "@shielded-x402/client";
 import {
-  createEnvioGraphqlProvider,
+  createIndexerProvider,
   createErc8004DirectoryClient,
   createOnchainRegistryProvider,
   createScanApiProvider,
@@ -330,7 +330,7 @@ const wallet = await FileBackedWalletState.create({
 const providers = [];
 if (env.ERC8004_ENVIO_GRAPHQL_URL) {
   providers.push(
-    createEnvioGraphqlProvider({
+    createIndexerProvider({
       endpointUrl: env.ERC8004_ENVIO_GRAPHQL_URL,
     }),
   );
@@ -518,7 +518,7 @@ async function ensureCreditState(creditClient) {
   const sdk = new ShieldedClientSDK({
     endpoint: creditRelayerEndpoint,
     signer: (message) => account.signMessage({ message }),
-    proofProvider: await createNoirJsProofProviderFromDefaultCircuit({
+    proofProvider: await createProofProvider({
       backendProofOptions: { verifierTarget: "evm" },
     }),
   });

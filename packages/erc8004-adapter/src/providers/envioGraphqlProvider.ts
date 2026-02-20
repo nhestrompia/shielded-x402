@@ -6,7 +6,7 @@ import type {
 } from '@shielded-x402/shared-types';
 import type { DirectoryProvider, ResolveAgentInput, SearchAgentsInput } from '../types.js';
 
-interface EnvioGraphqlProviderConfig {
+interface IndexerProviderConfig {
   endpointUrl: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -366,7 +366,7 @@ function filterProfilesByQuery(profiles: CanonicalAgentProfile[], query: string)
   );
 }
 
-export function createEnvioGraphqlProvider(config: EnvioGraphqlProviderConfig): DirectoryProvider {
+export function createIndexerProvider(config: IndexerProviderConfig): DirectoryProvider {
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? 10_000;
 

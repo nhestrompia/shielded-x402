@@ -6,7 +6,7 @@ import {
   createCreditShieldedFetch,
   FileBackedWalletState,
   ShieldedClientSDK,
-  createNoirJsProofProviderFromDefaultCircuit,
+  createProofProvider,
   deriveCommitment
 } from '@shielded-x402/client';
 import { randomBytes } from 'node:crypto';
@@ -85,7 +85,7 @@ const account = privateKeyToAccount(payerPrivateKey);
 const sdk = new ShieldedClientSDK({
   endpoint: relayerEndpoint,
   signer: (message) => account.signMessage({ message }),
-  proofProvider: await createNoirJsProofProviderFromDefaultCircuit({
+  proofProvider: await createProofProvider({
     backendProofOptions: { verifierTarget: 'evm' }
   })
 });

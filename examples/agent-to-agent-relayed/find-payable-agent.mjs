@@ -1,5 +1,5 @@
 import {
-  createEnvioGraphqlProvider,
+  createIndexerProvider,
   createErc8004DirectoryClient,
   createOnchainRegistryProvider,
   createScanApiProvider,
@@ -234,7 +234,7 @@ async function probeCandidate(url) {
 const providers = [];
 if (env.ERC8004_ENVIO_GRAPHQL_URL) {
   providers.push(
-    createEnvioGraphqlProvider({ endpointUrl: env.ERC8004_ENVIO_GRAPHQL_URL }),
+    createIndexerProvider({ endpointUrl: env.ERC8004_ENVIO_GRAPHQL_URL }),
   );
 }
 if (

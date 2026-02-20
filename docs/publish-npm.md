@@ -83,6 +83,6 @@ import {
   ShieldedClientSDK,
   createCreditChannelClient,
   createCreditShieldedFetch,
-  createNoirJsProofProviderFromDefaultCircuit
+  createProofProvider
 } from '@shielded-x402/client';
 ```

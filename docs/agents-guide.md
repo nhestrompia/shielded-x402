@@ -93,7 +93,7 @@ const response = await creditFetch('https://merchant.example/paid', { method: 'G
 
 ```ts
 const directoryClient = createErc8004DirectoryClient({
-  providers: [createEnvioGraphqlProvider({ endpointUrl: process.env.ERC8004_ENVIO_GRAPHQL_URL! })]
+  providers: [createIndexerProvider({ endpointUrl: process.env.ERC8004_ENVIO_GRAPHQL_URL! })]
 });
 
 const agentFetch = createAgentPaymentFetch({ creditClient, directoryClient });

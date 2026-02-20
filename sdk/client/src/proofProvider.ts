@@ -332,7 +332,7 @@ export async function createNoirJsProofProviderFromCircuit(
  * Highest-level convenience for agent apps:
  * loads the bundled spend_change artifact from this package.
  */
-export async function createNoirJsProofProviderFromDefaultCircuit(
+export async function createProofProvider(
   config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
   const circuit = await loadBundledSpendChangeCircuit();
