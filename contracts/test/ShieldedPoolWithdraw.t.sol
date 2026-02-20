@@ -5,16 +5,9 @@ import {ShieldedPool} from "../src/ShieldedPool.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 import {MockProofVerifier} from "../src/verifiers/MockProofVerifier.sol";
 
-address constant HEVM_ADDRESS = address(uint160(uint256(keccak256("hevm cheat code"))));
-
-interface Vm {
-    function sign(uint256 privateKey, bytes32 digest) external returns (uint8 v, bytes32 r, bytes32 s);
-    function addr(uint256 privateKey) external returns (address);
-    function warp(uint256 timestamp) external;
-}
-
 contract ShieldedPoolWithdrawTest {
-    Vm internal constant vm = Vm(HEVM_ADDRESS);
+    bytes32 internal constant CHALLENGE_DOMAIN_HASH =
+        0xe32e24a51c351093d339c0035177dc2da5c1b8b9563e414393edd75506dcc055;
 
     ShieldedPool internal pool;
     MockUSDC internal usdc;
@@ -27,134 +20,183 @@ contract ShieldedPoolWithdrawTest {
 
         usdc.mint(address(this), 2_000_000_000);
         usdc.approve(address(pool), type(uint256).max);
-
-        // Seed pool liquidity used for merchant withdrawals in tests.
         pool.deposit(1_000_000_000, keccak256("seed-liquidity"));
     }
 
-    function testWithdrawByAllowedMerchantSignature() public {
+    function testWithdrawFromRecordedSpend() public {
         setUp();
 
-        uint256 merchantKey = 0xA11CE;
-        address merchant = vm.addr(merchantKey);
+        bytes32 depositCommitment = keccak256("deposit-1");
+        pool.deposit(100_000_000, depositCommitment);
+
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-1");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-1");
+        bytes32 changeCommitment = keccak256("change-commitment-1");
+        uint256 amount = 50_000_000;
         address recipient = address(0xBEEF);
-        uint256 amount = 100_000_000;
-        bytes memory encryptedNote = bytes("ciphertext");
-        bytes32 claimId = keccak256("claim-1");
-        uint64 deadline = uint64(block.timestamp + 300);
+        bytes32 challengeNonce = keccak256("withdraw-nonce-1");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, recipient);
 
-        pool.setMerchant(merchant, true);
-
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "shielded-x402:v1:withdraw",
-                address(pool),
-                encryptedNote,
-                recipient,
-                amount,
-                claimId,
-                deadline
-            )
-        );
-        bytes32 signedDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(merchantKey, signedDigest);
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
 
         uint256 beforeBalance = usdc.balanceOf(recipient);
-
-        bytes memory auth = abi.encode(
-            merchant,
-            recipient,
-            amount,
-            claimId,
-            deadline,
-            v,
-            r,
-            s
-        );
-
-        pool.withdraw(encryptedNote, auth);
-
+        pool.withdraw(nullifier, challengeNonce, recipient);
         uint256 afterBalance = usdc.balanceOf(recipient);
+
         require(afterBalance == beforeBalance + amount, "recipient not paid");
     }
 
-    function testWithdrawRejectsReusedClaimId() public {
+    function testWithdrawDoesNotRequireMerchantAllowlist() public {
         setUp();
 
-        uint256 merchantKey = 0xB0B;
-        address merchant = vm.addr(merchantKey);
-        address recipient = address(0xF00D);
-        uint256 amount = 20_000_000;
-        bytes memory encryptedNote = bytes("ciphertext");
-        bytes32 claimId = keccak256("claim-2");
-        uint64 deadline = uint64(block.timestamp + 300);
+        bytes32 depositCommitment = keccak256("deposit-no-allowlist");
+        pool.deposit(100_000_000, depositCommitment);
 
-        pool.setMerchant(merchant, true);
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-no-allowlist");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-no-allowlist");
+        bytes32 changeCommitment = keccak256("change-commitment-no-allowlist");
+        uint256 amount = 25_000_000;
+        address recipient = address(0xABCD);
+        bytes32 challengeNonce = keccak256("withdraw-nonce-no-allowlist");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, recipient);
 
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "shielded-x402:v1:withdraw",
-                address(pool),
-                encryptedNote,
-                recipient,
-                amount,
-                claimId,
-                deadline
-            )
-        );
-        bytes32 signedDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(merchantKey, signedDigest);
-        bytes memory auth = abi.encode(merchant, recipient, amount, claimId, deadline, v, r, s);
+        // No setMerchant() call exists or is required.
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
 
-        pool.withdraw(encryptedNote, auth);
+        uint256 beforeBalance = usdc.balanceOf(recipient);
+        pool.withdraw(nullifier, challengeNonce, recipient);
+        uint256 afterBalance = usdc.balanceOf(recipient);
 
-        bool reverted;
-        try pool.withdraw(encryptedNote, auth) {
-            reverted = false;
-        } catch {
-            reverted = true;
-        }
-
-        require(reverted, "expected claim reuse revert");
+        require(afterBalance == beforeBalance + amount, "recipient not paid without allowlist");
     }
 
-    function testWithdrawRejectsExpiredAuth() public {
+    function testWithdrawRejectsReplay() public {
         setUp();
 
-        uint256 merchantKey = 0xCAFE;
-        address merchant = vm.addr(merchantKey);
-        address recipient = address(0x1234);
-        uint256 amount = 10_000_000;
-        bytes memory encryptedNote = bytes("ciphertext");
-        bytes32 claimId = keccak256("claim-3");
-        uint64 deadline = uint64(block.timestamp + 1);
+        bytes32 depositCommitment = keccak256("deposit-2");
+        pool.deposit(100_000_000, depositCommitment);
 
-        pool.setMerchant(merchant, true);
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-2");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-2");
+        bytes32 changeCommitment = keccak256("change-commitment-2");
+        uint256 amount = 40_000_000;
+        address recipient = address(0xCAFE);
+        bytes32 challengeNonce = keccak256("withdraw-nonce-2");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, recipient);
 
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "shielded-x402:v1:withdraw",
-                address(pool),
-                encryptedNote,
-                recipient,
-                amount,
-                claimId,
-                deadline
-            )
-        );
-        bytes32 signedDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(merchantKey, signedDigest);
-        bytes memory auth = abi.encode(merchant, recipient, amount, claimId, deadline, v, r, s);
-
-        vm.warp(block.timestamp + 2);
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
+        pool.withdraw(nullifier, challengeNonce, recipient);
 
         bool reverted;
-        try pool.withdraw(encryptedNote, auth) {
+        try pool.withdraw(nullifier, challengeNonce, recipient) {
             reverted = false;
         } catch {
             reverted = true;
         }
+        require(reverted, "expected replay revert");
+    }
 
-        require(reverted, "expected expired auth revert");
+    function testWithdrawRejectsWrongRecipientBinding() public {
+        setUp();
+
+        bytes32 depositCommitment = keccak256("deposit-3");
+        pool.deposit(100_000_000, depositCommitment);
+
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-3");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-3");
+        bytes32 changeCommitment = keccak256("change-commitment-3");
+        uint256 amount = 30_000_000;
+        address intendedRecipient = address(0x1234);
+        address wrongRecipient = address(0x9999);
+        bytes32 challengeNonce = keccak256("withdraw-nonce-3");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, intendedRecipient);
+
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
+
+        bool reverted;
+        try pool.withdraw(nullifier, challengeNonce, wrongRecipient) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected invalid challenge revert");
+    }
+
+    function testWithdrawRejectsWrongChallengeNonce() public {
+        setUp();
+
+        bytes32 depositCommitment = keccak256("deposit-4");
+        pool.deposit(100_000_000, depositCommitment);
+
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-4");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-4");
+        bytes32 changeCommitment = keccak256("change-commitment-4");
+        uint256 amount = 15_000_000;
+        address recipient = address(0x4567);
+        bytes32 challengeNonce = keccak256("withdraw-nonce-4");
+        bytes32 wrongChallengeNonce = keccak256("withdraw-nonce-4-wrong");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, recipient);
+
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
+
+        bool reverted;
+        try pool.withdraw(nullifier, wrongChallengeNonce, recipient) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected invalid challenge nonce revert");
+    }
+
+    function testWithdrawRejectsUnknownNullifier() public {
+        setUp();
+
+        bool reverted;
+        try pool.withdraw(keccak256("unknown-nullifier"), keccak256("any-nonce"), address(0xFACE)) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected unknown nullifier revert");
+    }
+
+    function testWithdrawRejectsZeroRecipient() public {
+        setUp();
+
+        bytes32 depositCommitment = keccak256("deposit-5");
+        pool.deposit(100_000_000, depositCommitment);
+
+        bytes32 root = pool.latestRoot();
+        bytes32 nullifier = keccak256("nf-withdraw-5");
+        bytes32 merchantCommitment = keccak256("merchant-commitment-5");
+        bytes32 changeCommitment = keccak256("change-commitment-5");
+        uint256 amount = 12_000_000;
+        bytes32 challengeNonce = keccak256("withdraw-nonce-5");
+        bytes32 challengeHash = _deriveChallengeHash(challengeNonce, amount, address(0));
+
+        pool.submitSpend(hex"1234", nullifier, root, merchantCommitment, changeCommitment, challengeHash, amount);
+
+        bool reverted;
+        try pool.withdraw(nullifier, challengeNonce, address(0)) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected zero recipient revert");
+    }
+
+    function _deriveChallengeHash(bytes32 challengeNonce, uint256 amount, address recipient)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encodePacked(CHALLENGE_DOMAIN_HASH, challengeNonce, bytes32(amount), bytes32(uint256(uint160(recipient))))
+        );
     }
 }

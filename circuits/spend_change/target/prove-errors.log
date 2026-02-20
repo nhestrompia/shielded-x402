@@ -1,4 +1,4 @@
 Scheme is: ultra_honk, num threads: 10 (mem: 11.02 MiB)
-CircuitProve: Proving key computed in 1838 ms (mem: 1502.23 MiB)
-Public inputs saved to "./target/public_inputs" (mem: 2010.61 MiB)
-Proof saved to "./target/proof" (mem: 2010.61 MiB)
+CircuitProve: Proving key computed in 1992 ms (mem: 1502.20 MiB)
+Public inputs saved to "./target/public_inputs" (mem: 2009.84 MiB)
+Proof saved to "./target/proof" (mem: 2009.84 MiB)

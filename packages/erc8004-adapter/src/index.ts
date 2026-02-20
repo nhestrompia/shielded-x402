@@ -1,4 +1,9 @@
 import type { AgentRecord, ReputationSignal } from '@shielded-x402/shared-types';
+export * from './types.js';
+export * from './client.js';
+export * from './providers/envioGraphqlProvider.js';
+export * from './providers/onchainRegistryProvider.js';
+export * from './providers/scanApiProvider.js';
 
 export interface Erc8004AdapterConfig {
   enabled: boolean;
@@ -10,6 +15,10 @@ function buildUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, '')}${path}`;
 }
 
+/**
+ * Legacy lightweight HTTP adapter used by merchant-gateway endpoints.
+ * Kept for backward compatibility while newer code adopts provider-based directory client APIs.
+ */
 export class Erc8004Adapter {
   constructor(private readonly config: Erc8004AdapterConfig) {}
 

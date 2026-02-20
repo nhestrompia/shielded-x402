@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { ShieldedMerchantSDK } from './merchant.js';
-import { createLocalWithdrawalSigner } from './withdrawalSigner.js';
 import { privateKeyToAccount } from 'viem/accounts';
-import { concatHex, keccak256, pad } from 'viem';
+import { concatHex, keccak256 } from 'viem';
 import {
-  CRYPTO_SPEC,
+  challengeHashPreimage,
   buildPaymentSignatureHeader,
   normalizeRequirement
 } from '@shielded-x402/shared-types';
@@ -113,14 +112,14 @@ describe('ShieldedMerchantSDK', () => {
     );
 
     const issued = sdk.issue402();
-    const amountWord = (`0x${(10n).toString(16).padStart(64, '0')}` as `0x${string}`);
     const challengeHash = keccak256(
-      concatHex([
-        CRYPTO_SPEC.challengeDomainHash,
-        issued.requirement.challengeNonce as `0x${string}`,
-        amountWord,
-        pad('0x0000000000000000000000000000000000000002', { size: 32 })
-      ])
+      concatHex(
+        challengeHashPreimage(
+          issued.requirement.challengeNonce as `0x${string}`,
+          10n,
+          '0x0000000000000000000000000000000000000002'
+        )
+      )
     );
 
     const payload = {
@@ -160,16 +159,11 @@ describe('ShieldedMerchantSDK', () => {
     expect(second.ok).toBe(false);
   });
 
-  it('creates signed withdraw auth payload', async () => {
-    const signer = createLocalWithdrawalSigner(
-      '0x59c6995e998f97a5a0044966f09453842c9f9f4d6f8f8fcaef4f8f16c5b6f4c0'
-    );
-
+  it('creates withdraw calldata payload', async () => {
     const sdk = new ShieldedMerchantSDK(
       {
         rail: 'shielded-usdc',
         price: 10n,
-        merchantSignerAddress: signer.address,
         merchantPubKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
         verifyingContract: '0x0000000000000000000000000000000000000002',
         challengeTtlMs: 10000,
@@ -177,19 +171,22 @@ describe('ShieldedMerchantSDK', () => {
       },
       {
         verifyProof: async () => true,
-        isNullifierUsed: async () => false,
-        signWithdrawalDigest: signer.signDigest
+        isNullifierUsed: async () => false
       }
     );
 
     const result = await sdk.decryptAndWithdraw({
-      encryptedNote: '0x1234',
-      recipient: '0x0000000000000000000000000000000000000009',
-      amount: 3n
+      nullifier: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      challengeNonce: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      recipient: '0x0000000000000000000000000000000000000009'
     });
 
-    expect(result.signature.startsWith('0x')).toBe(true);
-    expect(result.amount).toBe(3n);
-    expect(result.encodedAuth.startsWith('0x')).toBe(true);
+    expect(result.encodedCallData.startsWith('0x')).toBe(true);
+    expect(result.nullifier).toBe(
+      '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    );
+    expect(result.challengeNonce).toBe(
+      '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    );
   });
 });

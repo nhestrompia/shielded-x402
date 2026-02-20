@@ -9,7 +9,7 @@ using standard x402 tooling (`x402-fetch`) on Base Sepolia.
 ## Run
 
 ```bash
-cd shielded-402/examples/payai-echo-fetch
+cd /path/to/shielded-402/examples/payai-echo-fetch
 npm install
 cp .env.example .env
 # set PRIVATE_KEY in .env

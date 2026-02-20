@@ -1,20 +1,15 @@
-import { CRYPTO_SPEC, type Hex } from '@shielded-x402/shared-types';
+import { CRYPTO_SPEC, normalizeHex, toHexWord, type Hex } from '@shielded-x402/shared-types';
 import { pad } from 'viem';
 import type { ProofProvider, ProofProviderRequest, ProofProviderResult } from './types.js';
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
-
-const toHexWord = (value: bigint): Hex => (`0x${value.toString(16).padStart(64, '0')}` as Hex);
-
-const normalizeHex = (value: string): Hex => {
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed.startsWith('0x')) {
-    return (`0x${BigInt(trimmed).toString(16)}` as Hex);
-  }
-  return (trimmed as Hex);
-};
+// UltraHonk backend can return expanded public inputs as 5 bytes32 words (32 bytes each) + amount byte.
+const EXPANDED_PUBLIC_INPUT_LENGTH = 161;
+const EXPANDED_PUBLIC_INPUT_AMOUNT_INDEX = 160;
+// Runtime dynamic import keeps this module compatible across Node ESM/CJS calling environments.
+const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
 
 const hexToBytes32 = (value: Hex): number[] => {
   const hex = value.slice(2).padStart(64, '0');
@@ -47,7 +42,7 @@ const normalizePublicInputWord = (value: unknown): Hex => {
 };
 
 const collapseExpandedPublicInputs = (publicInputs: Hex[]): Hex[] | null => {
-  if (publicInputs.length < 161) return null;
+  if (publicInputs.length < EXPANDED_PUBLIC_INPUT_LENGTH) return null;
   const readWord = (start: number): Hex => {
     const bytes: number[] = [];
     for (let i = 0; i < 32; i += 1) {
@@ -65,7 +60,7 @@ const collapseExpandedPublicInputs = (publicInputs: Hex[]): Hex[] | null => {
     readWord(64),
     readWord(96),
     readWord(128),
-    toHexWord(BigInt(publicInputs[160] ?? '0x0'))
+    toHexWord(BigInt(publicInputs[EXPANDED_PUBLIC_INPUT_AMOUNT_INDEX] ?? '0x0'))
   ];
 };
 
@@ -153,6 +148,27 @@ export interface NoirJsProofProviderConfig {
   enforcePublicInputsMatch?: boolean;
 }
 
+export interface NoirJsUltraHonkProofOptions {
+  verifierTarget?:
+    | 'evm'
+    | 'evm-no-zk'
+    | 'noir-recursive'
+    | 'noir-recursive-no-zk'
+    | 'noir-rollup'
+    | 'noir-rollup-no-zk'
+    | 'starknet'
+    | 'starknet-no-zk';
+  keccak?: boolean;
+  keccakZK?: boolean;
+  starknet?: boolean;
+  starknetZK?: boolean;
+}
+
+export interface NoirJsCircuitProofProviderConfig
+  extends Omit<NoirJsProofProviderConfig, 'noir' | 'backend'> {
+  backendProofOptions?: NoirJsUltraHonkProofOptions;
+}
+
 export interface NoirCircuitArtifact {
   bytecode: string;
   [key: string]: unknown;
@@ -167,8 +183,6 @@ const isNoirCircuitArtifact = (value: unknown): value is NoirCircuitArtifact => 
 };
 
 const loadBundledSpendChangeCircuit = async (): Promise<NoirCircuitArtifact> => {
-  const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
-
   // Node-safe path: avoid JSON module import-attribute issues by reading raw file.
   try {
     const fs = await dynamicImport('node:fs/promises');
@@ -186,6 +200,50 @@ const loadBundledSpendChangeCircuit = async (): Promise<NoirCircuitArtifact> => 
   }
   return candidate;
 };
+
+async function initializeUltraHonkBackend(
+  UltraHonkBackend: (new (bytecode: string) => NoirJsBackend) | (new (bytecode: string, api: unknown) => NoirJsBackend),
+  bbPkg: Record<string, unknown>,
+  circuit: NoirCircuitArtifact
+): Promise<NoirJsBackend> {
+  const ctorArity = (UltraHonkBackend as unknown as { length?: number }).length ?? 1;
+  if (ctorArity < 2) {
+    return new (UltraHonkBackend as new (bytecode: string) => NoirJsBackend)(circuit.bytecode);
+  }
+
+  const Barretenberg = bbPkg.Barretenberg as
+    | {
+        initSingleton?: (options?: Record<string, unknown>) => Promise<unknown>;
+        getSingleton?: () => unknown;
+        new?: (options?: Record<string, unknown>) => Promise<unknown>;
+      }
+    | undefined;
+
+  if (!Barretenberg) {
+    throw new Error('bb.js backend requires Barretenberg API constructor, but none was exported');
+  }
+
+  let api: unknown;
+  if (typeof Barretenberg.getSingleton === 'function') {
+    try {
+      api = Barretenberg.getSingleton();
+    } catch {
+      // singleton not initialized yet
+    }
+  }
+  if (!api && typeof Barretenberg.initSingleton === 'function') {
+    await Barretenberg.initSingleton();
+    api = Barretenberg.getSingleton?.();
+  }
+  if (!api && typeof Barretenberg.new === 'function') {
+    api = await Barretenberg.new();
+  }
+  if (!api) {
+    throw new Error('unable to initialize bb.js Barretenberg API');
+  }
+
+  return new (UltraHonkBackend as new (bytecode: string, api: unknown) => NoirJsBackend)(circuit.bytecode, api);
+}
 
 export function createNoirJsProofProvider(config: NoirJsProofProviderConfig): ProofProvider {
   return {
@@ -217,20 +275,50 @@ export function createNoirJsProofProvider(config: NoirJsProofProviderConfig): Pr
  */
 export async function createNoirJsProofProviderFromCircuit(
   circuit: NoirCircuitArtifact,
-  config?: Omit<NoirJsProofProviderConfig, 'noir' | 'backend'>
+  config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
-  const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
-  const noirPkg = await dynamicImport('@noir-lang/noir_js');
-  const bbPkg = await dynamicImport('@aztec/bb.js');
+  const importFromCallerFirst = async (moduleName: string): Promise<any> => {
+    try {
+      const modulePkg = await dynamicImport('node:module');
+      const urlPkg = await dynamicImport('node:url');
+      const createRequire = modulePkg.createRequire as (path: string) => NodeJS.Require;
+      const pathToFileURL = urlPkg.pathToFileURL as (path: string) => URL;
+      const callerRequire = createRequire(`${process.cwd()}/package.json`);
+      const resolved = callerRequire.resolve(moduleName);
+      return dynamicImport(pathToFileURL(resolved).href);
+    } catch {
+      return dynamicImport(moduleName);
+    }
+  };
+
+  const noirPkg = await importFromCallerFirst('@noir-lang/noir_js');
+  const bbPkg = await importFromCallerFirst('@aztec/bb.js');
 
   const Noir = noirPkg.Noir as new (artifact: NoirCircuitArtifact) => NoirJsProgramExecutor;
-  const UltraHonkBackend = bbPkg.UltraHonkBackend as new (bytecode: string) => NoirJsBackend;
+  const UltraHonkBackend = bbPkg.UltraHonkBackend as
+    | (new (bytecode: string) => NoirJsBackend)
+    | (new (bytecode: string, api: unknown) => NoirJsBackend);
 
   const noir = new Noir(circuit);
-  const backend = new UltraHonkBackend(circuit.bytecode);
+
+  // bb.js v3 expects an API instance in UltraHonkBackend(bytecode, api),
+  // while older versions used UltraHonkBackend(bytecode).
+  const backend = await initializeUltraHonkBackend(UltraHonkBackend, bbPkg, circuit);
+
+  // Generated verifier contracts in this repo are ZK Honk by default.
+  // Keep SDK defaults aligned so proof byte length/transcript mode matches onchain verification.
+  const backendProofOptions = config?.backendProofOptions ?? { verifierTarget: 'evm' };
   const providerConfig: NoirJsProofProviderConfig = {
     noir,
-    backend
+    backend: {
+      generateProof: async (witness: unknown) =>
+        (
+          backend.generateProof as (
+            witness: unknown,
+            options?: NoirJsUltraHonkProofOptions
+          ) => Promise<{ proof: unknown; publicInputs?: unknown }>
+        )(witness, backendProofOptions)
+    }
   };
   if (config?.enforcePublicInputsMatch !== undefined) {
     providerConfig.enforcePublicInputsMatch = config.enforcePublicInputsMatch;
@@ -244,8 +332,8 @@ export async function createNoirJsProofProviderFromCircuit(
  * Highest-level convenience for agent apps:
  * loads the bundled spend_change artifact from this package.
  */
-export async function createNoirJsProofProviderFromDefaultCircuit(
-  config?: Omit<NoirJsProofProviderConfig, 'noir' | 'backend'>
+export async function createProofProvider(
+  config?: NoirJsCircuitProofProviderConfig
 ): Promise<ProofProvider> {
   const circuit = await loadBundledSpendChangeCircuit();
   return createNoirJsProofProviderFromCircuit(circuit, config);

@@ -2,7 +2,7 @@ import {
   X402_HEADERS,
   buildPaymentSignatureHeader,
   normalizeRequirement,
-  parsePaymentRequiredHeader,
+  toHexWord,
   type Hex,
   type PaymentRequirement,
   type ShieldedNote,
@@ -12,7 +12,6 @@ import { randomBytes } from 'node:crypto';
 import { deriveChallengeHash, deriveCommitment, deriveNullifier } from './crypto.js';
 import { deriveWitness, type MerkleWitness } from './merkle.js';
 import type {
-  Parsed402,
   Prepared402Payment,
   ShieldedClientConfig,
   SpendBuildParams,
@@ -65,9 +64,10 @@ export class ShieldedClientSDK {
     const merchantCommitment = deriveCommitment(params.amount, merchantRho, params.merchantPubKey);
     const changeAmount = params.note.amount - params.amount;
     const changeRho = params.changeRho ?? randomFieldHex();
+    const changeNullifierSecret = params.changeNullifierSecret ?? randomFieldHex();
     const changeCommitment = deriveCommitment(changeAmount, changeRho, params.note.pkHash);
     const challengeHash = deriveChallengeHash(params.challengeNonce, params.amount, params.merchantAddress);
-    const amountHex = (`0x${params.amount.toString(16).padStart(64, '0')}` as Hex);
+    const amountHex = toHexWord(params.amount);
 
     const response: ShieldedPaymentResponse = {
       proof: '0x00',
@@ -90,6 +90,7 @@ export class ShieldedClientSDK {
 
     return {
       merchantRho,
+      changeNullifierSecret,
       response,
       changeNote: {
         amount: changeAmount,
@@ -153,17 +154,11 @@ export class ShieldedClientSDK {
     return { payload, signature, paymentSignatureHeader };
   }
 
-  parse402Response(response: Response): Parsed402 {
-    const header = response.headers.get(X402_HEADERS.paymentRequired);
-    if (!header) throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
-    return { requirement: parsePaymentRequiredHeader(header) };
-  }
-
   async prepare402Payment(
     requirement: PaymentRequirement,
     note: ShieldedNote,
     witness: MerkleWitness,
-    payerPkHash: Hex,
+    nullifierSecret: Hex,
     baseHeaders?: HeadersInit
   ): Promise<Prepared402Payment> {
     if (requirement.rail !== 'shielded-usdc') {
@@ -177,7 +172,7 @@ export class ShieldedClientSDK {
     const spendParams: SpendBuildParams = {
       note,
       witness,
-      nullifierSecret: payerPkHash,
+      nullifierSecret,
       merchantPubKey: requirement.merchantPubKey,
       merchantAddress: merchant,
       amount,
@@ -198,39 +193,9 @@ export class ShieldedClientSDK {
       requirement,
       headers,
       response: bundleWithProof.response,
-      changeNote: bundleWithProof.changeNote
+      changeNote: bundleWithProof.changeNote,
+      changeNullifierSecret: bundleWithProof.changeNullifierSecret
     };
-  }
-
-  async complete402Payment(
-    input: string,
-    init: RequestInit,
-    requirement: PaymentRequirement,
-    note: ShieldedNote,
-    witness: MerkleWitness,
-    payerPkHash: Hex,
-    fetchFn: typeof fetch = fetch
-  ): Promise<Response> {
-    const prepared = await this.prepare402Payment(
-      requirement,
-      note,
-      witness,
-      payerPkHash,
-      init.headers
-    );
-
-    return fetchFn(input, {
-      ...init,
-      headers: prepared.headers
-    });
-  }
-
-  async fetchWithShieldedPayment(input: string, init: RequestInit, note: ShieldedNote, witness: MerkleWitness, payerPkHash: Hex): Promise<Response> {
-    const first = await fetch(input, init);
-    if (first.status !== 402) return first;
-
-    const parsed = this.parse402Response(first);
-    return this.complete402Payment(input, init, parsed.requirement, note, witness, payerPkHash);
   }
 }
 

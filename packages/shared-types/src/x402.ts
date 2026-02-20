@@ -11,9 +11,13 @@ export const X402_HEADERS = {
 } as const;
 
 export const RELAYER_ROUTES = {
-  challenge: '/v1/relay/challenge',
-  pay: '/v1/relay/pay',
-  statusPrefix: '/v1/relay/status'
+  creditDomain: '/v1/relay/credit/domain',
+  creditTopup: '/v1/relay/credit/topup',
+  creditPay: '/v1/relay/credit/pay',
+  creditCloseStart: '/v1/relay/credit/close/start',
+  creditCloseChallenge: '/v1/relay/credit/close/challenge',
+  creditCloseFinalize: '/v1/relay/credit/close/finalize',
+  creditCloseStatusPrefix: '/v1/relay/credit/close'
 } as const;
 
 function toBase64(value: string): string {

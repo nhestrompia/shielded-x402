@@ -1,19 +1,52 @@
-import type { RelayerMerchantResult } from '@shielded-x402/shared-types';
+import {
+  headersToRecord,
+  type RelayerMerchantResult
+} from '@shielded-x402/shared-types';
 import { createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia, sepolia, type Chain } from 'viem/chains';
 import type { PayoutAdapter, PayoutRequest } from './types.js';
-
-function headersToRecord(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
-  headers.forEach((value, key) => {
-    out[key] = value;
-  });
-  return out;
-}
+import {
+  createAdaptiveX402BaseFetch,
+  createPayaiX402ProviderAdapter,
+  stripPaymentHeaders,
+  type X402ProviderAdapter
+} from './payoutX402.js';
+export {
+  createPayaiX402ProviderAdapter,
+  type HostedX402ProviderAdapterConfig,
+  type X402ProviderAdapter,
+  type X402ProviderAdapterContext
+} from './payoutX402.js';
 
 function bytesToBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
+}
+
+function buildMerchantFetchInit(
+  merchantRequest: PayoutRequest['merchantRequest'],
+  extraHeaders?: Record<string, string>,
+  transformHeaders?: (headers: Record<string, string>) => Record<string, string>
+): RequestInit {
+  const method = merchantRequest.method.toUpperCase();
+  const mergedHeaders = transformHeaders
+    ? transformHeaders({
+        ...(merchantRequest.headers ?? {}),
+        ...(extraHeaders ?? {})
+      })
+    : {
+        ...(merchantRequest.headers ?? {}),
+        ...(extraHeaders ?? {})
+      };
+
+  const init: RequestInit = {
+    method,
+    headers: mergedHeaders
+  };
+  if (method !== 'GET' && method !== 'HEAD' && merchantRequest.bodyBase64 !== undefined) {
+    init.body = Buffer.from(merchantRequest.bodyBase64, 'base64');
+  }
+  return init;
 }
 
 export function createNoopPayoutAdapter(): PayoutAdapter {
@@ -37,23 +70,7 @@ export function createForwardPayoutAdapter(config: ForwardPayoutConfig = {}): Pa
 
   return {
     payMerchant: async (request: PayoutRequest): Promise<RelayerMerchantResult> => {
-      const method = request.merchantRequest.method.toUpperCase();
-      const mergedHeaders: Record<string, string> = {
-        ...(request.merchantRequest.headers ?? {}),
-        ...(config.staticHeaders ?? {})
-      };
-      const init: RequestInit = {
-        method,
-        headers: mergedHeaders
-      };
-      if (
-        method !== 'GET' &&
-        method !== 'HEAD' &&
-        request.merchantRequest.bodyBase64 !== undefined
-      ) {
-        init.body = Buffer.from(request.merchantRequest.bodyBase64, 'base64');
-      }
-
+      const init = buildMerchantFetchInit(request.merchantRequest, config.staticHeaders);
       const response = await fetchImpl(request.merchantRequest.url, init);
       const body = bytesToBase64(new Uint8Array(await response.arrayBuffer()));
 
@@ -77,6 +94,7 @@ export interface X402PayoutConfig extends ForwardPayoutConfig {
   privateKey: `0x${string}`;
   chain?: 'base-sepolia' | 'sepolia';
   wrapFetchWithPayment?: WrapFetchWithPayment;
+  providerAdapters?: X402ProviderAdapter[];
 }
 
 function resolveChain(chain: X402PayoutConfig['chain']): Chain {
@@ -90,6 +108,8 @@ function resolveChain(chain: X402PayoutConfig['chain']): Chain {
 }
 
 async function loadWrapFetchWithPayment(): Promise<WrapFetchWithPayment> {
+  // Use a runtime dynamic import so this module can run in environments where `x402-fetch`
+  // is optional and only needed for x402 payout mode.
   const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<unknown>;
   const module = (await dynamicImport('x402-fetch')) as {
     wrapFetchWithPayment?: WrapFetchWithPayment;
@@ -99,24 +119,6 @@ async function loadWrapFetchWithPayment(): Promise<WrapFetchWithPayment> {
     throw new Error('x402-fetch.wrapFetchWithPayment is unavailable');
   }
   return wrap;
-}
-
-function stripPaymentHeaders(headers: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    const lower = key.toLowerCase();
-    if (
-      lower === 'payment-signature' ||
-      lower === 'payment-required' ||
-      lower === 'payment-response' ||
-      lower === 'x-payment' ||
-      lower === 'x-payment-response'
-    ) {
-      continue;
-    }
-    out[key] = value;
-  }
-  return out;
 }
 
 export function createX402PayoutAdapter(config: X402PayoutConfig): PayoutAdapter {
@@ -134,7 +136,7 @@ export function createX402PayoutAdapter(config: X402PayoutConfig): PayoutAdapter
     if (!paidFetchPromise) {
       paidFetchPromise = (async () => {
         const wrap = config.wrapFetchWithPayment ?? (await loadWrapFetchWithPayment());
-        return wrap(fetchImpl, walletClient);
+        return wrap(createAdaptiveX402BaseFetch(fetchImpl, config.providerAdapters), walletClient);
       })();
     }
     return paidFetchPromise;
@@ -143,23 +145,11 @@ export function createX402PayoutAdapter(config: X402PayoutConfig): PayoutAdapter
   return {
     payMerchant: async (request: PayoutRequest): Promise<RelayerMerchantResult> => {
       const paidFetch = await getPaidFetch();
-      const method = request.merchantRequest.method.toUpperCase();
-      const mergedHeaders = stripPaymentHeaders({
-        ...(request.merchantRequest.headers ?? {}),
-        ...(config.staticHeaders ?? {})
-      });
-      const init: RequestInit = {
-        method,
-        headers: mergedHeaders
-      };
-      if (
-        method !== 'GET' &&
-        method !== 'HEAD' &&
-        request.merchantRequest.bodyBase64 !== undefined
-      ) {
-        init.body = Buffer.from(request.merchantRequest.bodyBase64, 'base64');
-      }
-
+      const init = buildMerchantFetchInit(
+        request.merchantRequest,
+        config.staticHeaders,
+        stripPaymentHeaders
+      );
       const response = await paidFetch(request.merchantRequest.url, init);
       const body = bytesToBase64(new Uint8Array(await response.arrayBuffer()));
 

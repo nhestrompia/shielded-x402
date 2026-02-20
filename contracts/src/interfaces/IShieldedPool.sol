@@ -13,7 +13,7 @@ interface IShieldedPool {
         uint256 changeLeafIndex,
         bytes32 newRoot
     );
-    event Withdrawn(address indexed merchant, address indexed recipient, uint256 amount, bytes32 indexed claimId);
+    event Withdrawn(bytes32 indexed nullifier, address indexed recipient, uint256 amount, bytes32 challengeNonce);
 
     function deposit(uint256 amount, bytes32 commitment) external;
 
@@ -27,7 +27,7 @@ interface IShieldedPool {
         uint256 amount
     ) external;
 
-    function withdraw(bytes calldata encryptedNote, bytes calldata merchantAuth) external;
+    function withdraw(bytes32 nullifier, bytes32 challengeNonce, address recipient) external;
 
     function isNullifierUsed(bytes32 nullifier) external view returns (bool);
     function isKnownRoot(bytes32 root) external view returns (bool);

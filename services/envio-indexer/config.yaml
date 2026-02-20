@@ -6,11 +6,11 @@ networks:
     contracts:
       - name: ShieldedPool
         address:
-          - 0x915315F4F672619364A8dAFd79E709943697C544
+          - 0x4b439b44f88830d880519Ca66CBA0F98C3970823
         handler: src/EventHandlers.ts
         events:
           - event: Deposited(bytes32 indexed commitment, uint256 indexed leafIndex, bytes32 indexed root, uint256 amount)
           - event: Spent(bytes32 indexed nullifier, bytes32 indexed merchantCommitment, bytes32 indexed changeCommitment, uint256 amount, bytes32 challengeHash, uint256 merchantLeafIndex, uint256 changeLeafIndex, bytes32 newRoot)
-          - event: Withdrawn(address indexed merchant, address indexed recipient, uint256 amount, bytes32 indexed claimId)
+          - event: Withdrawn(bytes32 indexed nullifier, address indexed recipient, uint256 amount, bytes32 challengeNonce)
 unordered_multichain_mode: true
 preload_handlers: true

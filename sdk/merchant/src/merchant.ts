@@ -1,13 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import {
   concatHex,
-  pad,
   hashMessage,
   recoverAddress,
   keccak256,
-  encodeAbiParameters,
-  encodePacked,
-  parseAbiParameters,
+  encodeFunctionData,
   type Hex
 } from 'viem';
 import type {
@@ -20,15 +17,28 @@ import type {
   WithdrawResult
 } from './types.js';
 import {
-  CRYPTO_SPEC,
+  challengeHashPreimage,
   buildPaymentRequiredHeader,
   normalizeRequirement,
   parsePaymentSignatureHeader,
+  validateShieldedPaymentResponseShape,
   type PaymentRequirement,
   type ShieldedPaymentResponse
 } from '@shielded-x402/shared-types';
 
-const withdrawArgs = parseAbiParameters('address merchant,address recipient,uint256 amount,bytes32 claimId,uint64 deadline,uint8 v,bytes32 r,bytes32 s');
+const withdrawAbi = [
+  {
+    type: 'function',
+    name: 'withdraw',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'nullifier', type: 'bytes32' },
+      { name: 'challengeNonce', type: 'bytes32' },
+      { name: 'recipient', type: 'address' }
+    ],
+    outputs: []
+  }
+] as const;
 
 interface ActiveChallenge {
   expiresAt: number;
@@ -44,18 +54,6 @@ interface SignedPaymentEnvelope {
 
 function randomHex32(): Hex {
   return (`0x${randomBytes(32).toString('hex')}`) as Hex;
-}
-
-function splitSignature(signature: Hex): { v: number; r: Hex; s: Hex } {
-  const compact = signature.slice(2);
-  if (compact.length !== 130) {
-    throw new Error('invalid signature length');
-  }
-  const r = (`0x${compact.slice(0, 64)}`) as Hex;
-  const s = (`0x${compact.slice(64, 128)}`) as Hex;
-  let v = Number.parseInt(compact.slice(128, 130), 16);
-  if (v < 27) v += 27;
-  return { v, r, s };
 }
 
 export class ShieldedMerchantSDK {
@@ -131,18 +129,18 @@ export class ShieldedMerchantSDK {
     const expiresAt = this.activeChallenges.get(challengeNonce);
     if (!expiresAt) return { ok: false, reason: 'unknown challenge nonce' };
     if (this.currentTime() > expiresAt.expiresAt) return { ok: false, reason: 'challenge expired' };
-    if (!this.validatePayloadShape(payload)) return { ok: false, reason: 'invalid payment payload schema' };
-    if (payload.publicInputs.length !== 6) return { ok: false, reason: 'invalid public input length' };
+    const payloadValidationError = validateShieldedPaymentResponseShape(payload, {
+      exactPublicInputsLength: 6,
+      maxProofHexLength: 262144
+    });
+    if (payloadValidationError) {
+      return { ok: false, reason: payloadValidationError };
+    }
 
-    const amountWord = (`0x${expiresAt.amount.toString(16).padStart(64, '0')}` as Hex);
-    const merchantWord = pad(this.config.verifyingContract, { size: 32 });
     const expectedChallengeHash = keccak256(
-      concatHex([
-        CRYPTO_SPEC.challengeDomainHash as Hex,
-        challengeNonce as Hex,
-        amountWord,
-        merchantWord
-      ])
+      concatHex(
+        challengeHashPreimage(challengeNonce as Hex, expiresAt.amount, this.config.verifyingContract)
+      )
     );
     if (payload.challengeHash !== expectedChallengeHash) {
       return { ok: false, reason: 'challenge hash mismatch' };
@@ -196,102 +194,22 @@ export class ShieldedMerchantSDK {
   }
 
   async decryptAndWithdraw(request: WithdrawRequest): Promise<WithdrawResult> {
-    const merchant = this.config.merchantSignerAddress;
-    if (!merchant) {
-      throw new Error('merchantSignerAddress is required for withdraw signing');
-    }
-    if (!this.hooks.signWithdrawalDigest) {
-      throw new Error('signWithdrawalDigest hook is required for withdraw signing');
-    }
-
-    const amount = request.amount ?? this.config.price;
-    const claimId =
-      request.claimId ??
-      keccak256(
-        encodeAbiParameters(
-          parseAbiParameters('bytes encryptedNote,address recipient,uint256 amount'),
-          [request.encryptedNote, request.recipient, amount]
-        )
-      );
-    const deadline = BigInt(
-      request.deadline ??
-        Math.floor(this.currentTime() / 1000) + (this.config.withdrawalTtlSec ?? 600)
-    );
-
-    const digest = keccak256(
-      encodePacked(
-        ['string', 'address', 'bytes', 'address', 'uint256', 'bytes32', 'uint64'],
-        [
-          'shielded-x402:v1:withdraw',
-          this.config.verifyingContract,
-          request.encryptedNote,
-          request.recipient,
-          amount,
-          claimId,
-          deadline
-        ]
-      )
-    );
-
-    const signature = await this.hooks.signWithdrawalDigest(digest);
-    const { v, r, s } = splitSignature(signature);
-
-    const encodedAuth = encodeAbiParameters(withdrawArgs, [
-      merchant,
-      request.recipient,
-      amount,
-      claimId,
-      deadline,
-      v,
-      r,
-      s
-    ]);
+    const encodedCallData = encodeFunctionData({
+      abi: withdrawAbi,
+      functionName: 'withdraw',
+      args: [request.nullifier, request.challengeNonce, request.recipient]
+    });
 
     return {
-      claimId,
-      merchant,
-      amount,
-      deadline,
-      signature,
-      digest,
-      encodedAuth
+      nullifier: request.nullifier,
+      challengeNonce: request.challengeNonce,
+      recipient: request.recipient,
+      encodedCallData
     };
   }
 
   private currentTime(): number {
     return this.config.now ? this.config.now() : Date.now();
-  }
-
-  private validatePayloadShape(payload: unknown): payload is ShieldedPaymentResponse {
-    if (!payload || typeof payload !== 'object') return false;
-    const cast = payload as Record<string, unknown>;
-
-    if (!Array.isArray(cast.publicInputs)) return false;
-    if (typeof cast.proof !== 'string') return false;
-    if (typeof cast.nullifier !== 'string') return false;
-    if (typeof cast.root !== 'string') return false;
-    if (typeof cast.merchantCommitment !== 'string') return false;
-    if (typeof cast.changeCommitment !== 'string') return false;
-    if (typeof cast.challengeHash !== 'string') return false;
-    if (typeof cast.encryptedReceipt !== 'string') return false;
-
-    const hexLike = /^0x[0-9a-fA-F]*$/;
-    const fixedHex = /^0x[0-9a-fA-F]{64}$/;
-    const publicInputsValid = cast.publicInputs.every(
-      (value) => typeof value === 'string' && hexLike.test(value)
-    );
-
-    return (
-      cast.proof.length <= 262144 &&
-      cast.publicInputs.length > 0 &&
-      publicInputsValid &&
-      fixedHex.test(cast.nullifier) &&
-      fixedHex.test(cast.root) &&
-      fixedHex.test(cast.merchantCommitment) &&
-      fixedHex.test(cast.changeCommitment) &&
-      fixedHex.test(cast.challengeHash) &&
-      hexLike.test(cast.encryptedReceipt)
-    );
   }
 
   private parseSignedPaymentEnvelope(signatureHeader: string): SignedPaymentEnvelope {

@@ -8,7 +8,7 @@ import {
 } from '@shielded-x402/shared-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ShieldedClientSDK } from './client.js';
-import { deriveCommitment } from './crypto.js';
+import { deriveCommitment, deriveNullifier } from './crypto.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -47,6 +47,8 @@ describe('ShieldedClientSDK', () => {
       commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
 
     const bundle = sdk.buildSpendProof({
       note,
@@ -55,7 +57,7 @@ describe('ShieldedClientSDK', () => {
         path: [],
         indexBits: []
       },
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey: note.pkHash,
       merchantRho: '0x00000000000000000000000000000000000000000000000000000000000000aa',
       merchantAddress: '0x0000000000000000000000000000000000000001',
@@ -78,71 +80,6 @@ describe('ShieldedClientSDK', () => {
     expect(bundle.changeNote.rho).toBe('0x00000000000000000000000000000000000000000000000000000000000000bb');
   });
 
-  it('fetchWithShieldedPayment uses configured proof provider output', async () => {
-    const note = {
-      amount: 100n,
-      rho: '0x0000000000000000000000000000000000000000000000000000000000000011',
-      pkHash: '0x0000000000000000000000000000000000000000000000000000000000000009',
-      commitment: '0x0000000000000000000000000000000000000000000000000000000000000033',
-      leafIndex: 0
-    } as const;
-    const witness = {
-      root: '0x0000000000000000000000000000000000000000000000000000000000000099',
-      path: new Array<string>(MERKLE_DEPTH).fill(
-        '0x0000000000000000000000000000000000000000000000000000000000000000'
-      ) as Hex[],
-      indexBits: new Array<number>(MERKLE_DEPTH).fill(0)
-    };
-
-    const providerProof = '0x1234' as Hex;
-    const proofProvider = {
-      generateProof: vi.fn(async ({ expectedPublicInputs }) => ({
-        proof: providerProof,
-        publicInputs: expectedPublicInputs
-      }))
-    };
-
-    const sdk = new ShieldedClientSDK({
-      endpoint: 'http://localhost:3000',
-      signer: async () => '0xsig',
-      proofProvider
-    });
-
-    const requirement = makeRequirement();
-
-    const first = new Response(null, {
-      status: 402,
-      headers: {
-        [X402_HEADERS.paymentRequired]: buildPaymentRequiredHeader(requirement)
-      }
-    });
-    const second = new Response(JSON.stringify({ ok: true }), { status: 200 });
-
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(first)
-      .mockResolvedValueOnce(second) as typeof fetch;
-    globalThis.fetch = fetchMock;
-
-    const result = await sdk.fetchWithShieldedPayment(
-      'http://localhost:3000/paid/data',
-      { method: 'GET' },
-      note,
-      witness,
-      note.pkHash
-    );
-
-    expect(result.status).toBe(200);
-    expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const retryInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
-    const retryHeaders = new Headers(retryInit.headers);
-    const signed = retryHeaders.get(X402_HEADERS.paymentSignature);
-    expect(signed).toBeTruthy();
-    const parsed = parsePaymentSignatureHeader(signed ?? '');
-    expect(parsed.payload.proof).toBe(providerProof);
-  });
-
   it('buildSpendProofWithProvider replaces placeholder proof', async () => {
     const note = {
       amount: 100n,
@@ -155,6 +92,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -173,11 +112,10 @@ describe('ShieldedClientSDK', () => {
       signer: async () => '0xsig',
       proofProvider
     });
-
     const bundle = await sdk.buildSpendProofWithProvider({
       note,
       witness,
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey:
         '0x0000000000000000000000000000000000000000000000000000000000000012',
       merchantAddress: '0x0000000000000000000000000000000000000002',
@@ -203,6 +141,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -227,7 +167,7 @@ describe('ShieldedClientSDK', () => {
       requirement,
       note,
       witness,
-      note.pkHash,
+      nullifierSecret,
       { 'x-custom': '1' }
     );
     expect(prepared.response.proof).toBe('0x55');
@@ -237,6 +177,9 @@ describe('ShieldedClientSDK', () => {
     const signedPayload = parsePaymentSignatureHeader(signedHeader ?? '');
     expect(signedPayload.challengeNonce).toBe(requirement.challengeNonce);
     expect(signedPayload.payload.proof).toBe('0x55');
+    expect(signedPayload.payload.nullifier).toBe(
+      deriveNullifier(nullifierSecret, note.commitment)
+    );
     expect(proofProvider.generateProof).toHaveBeenCalledTimes(1);
   });
 
@@ -256,6 +199,8 @@ describe('ShieldedClientSDK', () => {
       ),
       leafIndex: 0
     } as const;
+    const nullifierSecret =
+      '0x0000000000000000000000000000000000000000000000000000000000000008' as Hex;
     const witness = {
       root: '0x0000000000000000000000000000000000000000000000000000000000000099',
       path: new Array<string>(MERKLE_DEPTH).fill(
@@ -266,7 +211,7 @@ describe('ShieldedClientSDK', () => {
     const bundle = sdk.buildSpendProof({
       note,
       witness,
-      nullifierSecret: note.pkHash,
+      nullifierSecret,
       merchantPubKey:
         '0x0000000000000000000000000000000000000000000000000000000000000012',
       merchantAddress: '0x0000000000000000000000000000000000000002',

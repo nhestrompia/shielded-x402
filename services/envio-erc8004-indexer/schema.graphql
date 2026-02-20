@@ -1,0 +1,53 @@
+type AgentIndexProfile {
+  id: ID!
+  chainId: BigInt!
+  tokenId: BigInt!
+  owner: String
+  agentWallet: String
+  tokenURI: String
+  name: String
+  description: String
+  imageUrl: String
+  active: Boolean
+  x402Supported: Boolean
+  supportedTrust: String
+  a2aEndpoint: String
+  mcpEndpoint: String
+  webEndpoint: String
+  oasfEndpoint: String
+  didIdentifier: String
+  ensIdentifier: String
+  emailIdentifier: String
+  registrationsJson: String
+  feedbackCount: BigInt!
+  feedbackScoreSum: BigInt!
+  feedbackRevokedCount: BigInt!
+  validationCount: BigInt!
+  successfulValidationCount: BigInt!
+  lastUpdatedBlock: BigInt!
+  updatedAt: BigInt!
+}
+
+type ReputationRegistry_NewFeedback {
+  id: ID!
+  chainId: BigInt!
+  agentId: BigInt!
+  clientAddress: String!
+  feedbackIndex: BigInt!
+  value: BigInt!
+  valueDecimals: BigInt!
+  indexedTag1: String!
+  tag1: String!
+  tag2: String!
+  endpoint: String!
+  feedbackURI: String!
+  feedbackHash: String!
+}
+
+type ReputationRegistry_FeedbackRevoked {
+  id: ID!
+  chainId: BigInt!
+  agentId: BigInt!
+  clientAddress: String!
+  feedbackIndex: BigInt!
+}

@@ -1,0 +1,27 @@
+{
+  "name": "envio-erc8004-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "clean": "tsc --clean",
+    "build": "tsc --build",
+    "watch": "tsc --watch",
+    "ensure:generated": "test -x ./generated/node_modules/.bin/ts-node || npm --prefix ./generated install --legacy-peer-deps --no-audit --no-fund",
+    "codegen": "envio codegen && pnpm run ensure:generated",
+    "dev": "pnpm run ensure:generated && envio dev",
+    "start": "pnpm run ensure:generated && envio start"
+  },
+  "devDependencies": {
+    "@types/node": "20.8.8",
+    "typescript": "5.2.2"
+  },
+  "dependencies": {
+    "envio": "2.32.3"
+  },
+  "optionalDependencies": {
+    "generated": "./generated"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

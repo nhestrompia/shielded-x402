@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {ShieldedPool} from "../src/ShieldedPool.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {MockFeeOnTransferUSDC} from "../src/mocks/MockFeeOnTransferUSDC.sol";
 import {MockProofVerifier} from "../src/verifiers/MockProofVerifier.sol";
 
 contract ShieldedPoolTest {
@@ -136,6 +137,23 @@ contract ShieldedPoolTest {
         require(reverted, "expected invalid proof revert");
     }
 
+    function testDepositRevertsForFeeOnTransferAsset() public {
+        setUp();
+        MockFeeOnTransferUSDC feeToken = new MockFeeOnTransferUSDC(1000); // 10%
+        ShieldedPool feePool = new ShieldedPool(address(feeToken), address(verifier));
+        feeToken.mint(address(this), 1_000_000_000);
+        feeToken.approve(address(feePool), type(uint256).max);
+
+        bool reverted;
+        try feePool.deposit(100_000_000, keccak256("fot-commitment")) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+
+        require(reverted, "expected fee-on-transfer deposit revert");
+    }
+
     function testDepositRevertsWithZeroCommitment() public {
         setUp();
         bool reverted;
@@ -170,5 +188,31 @@ contract ShieldedPoolTest {
             reverted = true;
         }
         require(reverted, "expected invalid proof size revert");
+    }
+
+    function testSubmitSpendRevertsForOutOfFieldAmount() public {
+        setUp();
+        bytes32 c1 = keccak256("deposit");
+        pool.deposit(100_000_000, c1);
+
+        uint256 fieldModulus =
+            21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        bool reverted;
+        try
+            pool.submitSpend(
+                hex"1234",
+                keccak256("nf-field"),
+                pool.latestRoot(),
+                keccak256("merchant-field"),
+                keccak256("change-field"),
+                keccak256("challenge-field"),
+                fieldModulus
+            )
+        {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected out-of-field amount revert");
     }
 }

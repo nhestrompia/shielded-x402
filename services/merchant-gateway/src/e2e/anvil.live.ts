@@ -1,11 +1,14 @@
 import {
   ShieldedClientSDK,
   buildWitnessFromCommitments,
-  createShieldedFetch,
   deriveCommitment,
   deriveNullifier,
 } from "@shielded-x402/client";
-import { type Hex } from "@shielded-x402/shared-types";
+import {
+  X402_HEADERS,
+  parsePaymentRequiredHeader,
+  type Hex
+} from "@shielded-x402/shared-types";
 import { createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -65,8 +68,8 @@ async function main(): Promise<void> {
     leafIndex: 0,
   } as const;
   const witness = buildWitnessFromCommitments([note.commitment], 0);
-  const payerPkHash = toWord(9n);
-  const expectedNullifier = deriveNullifier(payerPkHash, note.commitment);
+  const nullifierSecret = toWord(9n);
+  const expectedNullifier = deriveNullifier(nullifierSecret, note.commitment);
   if (latestRoot.toLowerCase() !== witness.root.toLowerCase()) {
     throw new Error(
       `fixture root mismatch: chain latestRoot=${latestRoot} witnessRoot=${witness.root}. ` +
@@ -80,16 +83,23 @@ async function main(): Promise<void> {
     signer: async (message: string): Promise<string> =>
       account.signMessage({ message }),
   });
-  const shieldedFetch = createShieldedFetch({
-    sdk,
-    resolveContext: async () => ({
-      note,
-      witness,
-      payerPkHash,
-    }),
-  });
-  const retry = await shieldedFetch(`${gatewayUrl.replace(/\/$/, "")}/paid/data`, {
+  const merchantUrl = `${gatewayUrl.replace(/\/$/, "")}/paid/data`;
+  const first = await fetch(merchantUrl, {
     method: "GET",
+  });
+  if (first.status !== 402) {
+    const body = await first.text();
+    throw new Error(`expected 402 response, got ${first.status}: ${body}`);
+  }
+  const header = first.headers.get(X402_HEADERS.paymentRequired);
+  if (!header) {
+    throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
+  }
+  const requirement = parsePaymentRequiredHeader(header);
+  const prepared = await sdk.prepare402Payment(requirement, note, witness, nullifierSecret);
+  const retry = await fetch(merchantUrl, {
+    method: "GET",
+    headers: prepared.headers
   });
 
   if (retry.status !== 200) {

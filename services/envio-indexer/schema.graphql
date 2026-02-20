@@ -20,9 +20,8 @@ type ShieldedPool_Spent {
 
 type ShieldedPool_Withdrawn {
   id: ID!
-  merchant: String!
+  nullifier: String!
   recipient: String!
   amount: BigInt!
-  claimId: String!
+  challengeNonce: String!
 }
-

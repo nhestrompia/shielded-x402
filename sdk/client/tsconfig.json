@@ -4,6 +4,7 @@
     "baseUrl": ".",
     "rootDir": "src",
     "paths": {
+      "@shielded-x402/erc8004-adapter": ["../../packages/erc8004-adapter/dist/index.d.ts"],
       "@shielded-x402/shared-types": ["../../packages/shared-types/dist/index.d.ts"]
     },
     "outDir": "dist"

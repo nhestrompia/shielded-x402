@@ -1,8 +1,8 @@
 import {
   ShieldedClientSDK,
-  buildWitnessFromCommitments,
-  createRelayedShieldedFetch
+  buildWitnessFromCommitments
 } from '@shielded-x402/client';
+import { X402_HEADERS, parsePaymentRequiredHeader } from '@shielded-x402/shared-types';
 import type { Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -22,26 +22,25 @@ async function run(): Promise<void> {
   const witness = buildWitnessFromCommitments(commitments, 0);
 
   const merchantUrl = process.env.DEMO_MERCHANT_URL ?? 'http://localhost:3000/paid/data';
-  const relayerEndpoint = process.env.DEMO_RELAYER_ENDPOINT;
-
-  const response = relayerEndpoint
-    ? await createRelayedShieldedFetch({
-        sdk,
-        relayerEndpoint,
-        challengeUrlResolver: ({ input }) => `${new URL(input).origin}/x402/requirement`,
-        resolveContext: async () => ({
-          note: deposited.note,
-          witness,
-          payerPkHash: ownerPkHash
-        })
-      })(merchantUrl, { method: 'GET' })
-    : await sdk.fetchWithShieldedPayment(
-        merchantUrl,
-        { method: 'GET' },
-        deposited.note,
-        witness,
-        ownerPkHash
-      );
+  const first = await fetch(merchantUrl, { method: 'GET' });
+  if (first.status !== 402) {
+    throw new Error(`expected 402 from merchant, got ${first.status}`);
+  }
+  const header = first.headers.get(X402_HEADERS.paymentRequired);
+  if (!header) {
+    throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
+  }
+  const requirement = parsePaymentRequiredHeader(header);
+  const prepared = await sdk.prepare402Payment(
+    requirement,
+    deposited.note,
+    witness,
+    '0x0000000000000000000000000000000000000000000000000000000000000009'
+  );
+  const response = await fetch(merchantUrl, {
+    method: 'GET',
+    headers: prepared.headers
+  });
 
   const body = await response.text();
   console.log(`status=${response.status}`);

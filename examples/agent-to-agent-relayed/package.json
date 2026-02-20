@@ -1,0 +1,20 @@
+{
+  "name": "agent-to-agent-relayed",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ERC-8004 discovery + shielded relayed A2A payment example",
+  "scripts": {
+    "start": "node test-agent-payment.mjs",
+    "seed-note": "node seed-note.mjs",
+    "find-payable": "node find-payable-agent.mjs"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "3.0.0-nightly.20260102",
+    "@noir-lang/noir_js": "1.0.0-beta.18",
+    "@shielded-x402/client": "file:../../sdk/client",
+    "@shielded-x402/erc8004-adapter": "file:../../packages/erc8004-adapter",
+    "dotenv": "^16.6.1",
+    "viem": "^2.45.3"
+  }
+}

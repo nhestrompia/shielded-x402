@@ -5,13 +5,14 @@
   "type": "module",
   "description": "Shielded client -> relayer -> PayAI x402 payout example",
   "scripts": {
-    "start": "node test-payai-shielded.mjs"
+    "start": "node test-payai-shielded.mjs",
+    "seed-note": "node seed-note.mjs"
   },
   "dependencies": {
-    "@aztec/bb.js": "^2.1.11",
-    "@noir-lang/noir_js": "^1.0.0-beta.18",
-    "@shielded-x402/client": "^0.2.3",
-    "@shielded-x402/shared-types": "^0.2.3",
+    "@aztec/bb.js": "3.0.0-nightly.20260102",
+    "@noir-lang/noir_js": "1.0.0-beta.18",
+    "@shielded-x402/client": "file:../../sdk/client",
+    "@shielded-x402/shared-types": "file:../../packages/shared-types",
     "dotenv": "^16.6.1",
     "viem": "^2.45.3"
   }

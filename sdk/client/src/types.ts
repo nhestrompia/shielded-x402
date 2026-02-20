@@ -28,6 +28,7 @@ export interface SpendBuildParams {
   note: ShieldedNote;
   witness: MerkleWitness;
   nullifierSecret: Hex;
+  changeNullifierSecret?: Hex;
   merchantPubKey: Hex;
   merchantRho?: Hex;
   merchantAddress: Hex;
@@ -40,6 +41,7 @@ export interface SpendBuildParams {
 export interface SpendProofBundle {
   response: ShieldedPaymentResponse;
   changeNote: ShieldedNote;
+  changeNullifierSecret: Hex;
   merchantRho: Hex;
 }
 
@@ -50,13 +52,10 @@ export interface ShieldedClientConfig {
   proofProvider?: ProofProvider;
 }
 
-export interface Parsed402 {
-  requirement: PaymentRequirement;
-}
-
 export interface Prepared402Payment {
   requirement: PaymentRequirement;
   headers: Headers;
   response: ShieldedPaymentResponse;
   changeNote: ShieldedNote;
+  changeNullifierSecret: Hex;
 }

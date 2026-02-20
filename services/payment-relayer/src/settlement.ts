@@ -25,7 +25,13 @@ const shieldedPoolSettlementAbi = [
       { name: 'amount', type: 'uint256' }
     ],
     outputs: []
-  }
+  },
+  { type: 'error', name: 'InvalidAmount', inputs: [] },
+  { type: 'error', name: 'InvalidCommitment', inputs: [] },
+  { type: 'error', name: 'InvalidProof', inputs: [] },
+  { type: 'error', name: 'InvalidProofSize', inputs: [] },
+  { type: 'error', name: 'NullifierAlreadyUsed', inputs: [] },
+  { type: 'error', name: 'UnknownRoot', inputs: [] }
 ] as const;
 
 const spentEvent = parseAbiItem(
@@ -74,22 +80,35 @@ export function createOnchainSettlement(config: OnchainSettlementConfig): Settle
         return { alreadySettled: true };
       }
 
-      const txHash = await walletClient.writeContract({
-        address: config.shieldedPoolAddress,
-        abi: shieldedPoolSettlementAbi,
-        functionName: 'submitSpend',
-        chain: null,
-        args: [
-          payload.proof,
-          payload.nullifier,
-          payload.root,
-          payload.merchantCommitment,
-          payload.changeCommitment,
-          payload.challengeHash,
-          amount
-        ],
-        account
-      });
+      let txHash: Hex;
+      try {
+        txHash = await walletClient.writeContract({
+          address: config.shieldedPoolAddress,
+          abi: shieldedPoolSettlementAbi,
+          functionName: 'submitSpend',
+          chain: null,
+          args: [
+            payload.proof,
+            payload.nullifier,
+            payload.root,
+            payload.merchantCommitment,
+            payload.changeCommitment,
+            payload.challengeHash,
+            amount
+          ],
+          account
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const shortMessage =
+          error && typeof error === 'object' && 'shortMessage' in error
+            ? String((error as { shortMessage?: unknown }).shortMessage ?? '')
+            : '';
+        if (shortMessage.length > 0) {
+          throw new Error(`submitSpend failed: ${shortMessage}`);
+        }
+        throw new Error(`submitSpend failed: ${message}`);
+      }
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
       if (receipt.status !== 'success') {
