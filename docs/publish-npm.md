@@ -81,7 +81,8 @@ Then in app code:
 ```ts
 import {
   ShieldedClientSDK,
-  createNoirJsProofProviderFromDefaultCircuit,
-  createShieldedFetch
+  createCreditChannelClient,
+  createCreditShieldedFetch,
+  createNoirJsProofProviderFromDefaultCircuit
 } from '@shielded-x402/client';
 ```

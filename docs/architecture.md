@@ -1,87 +1,69 @@
-# Shielded x402 Architecture (MVP)
+# Shielded x402 Architecture
 
 ## Components
 
-- `contracts/`: Shielded pool, verifier adapter interfaces, Solady-based safe ERC20 transfer handling.
-- `circuits/spend_change/`: Noir circuit scaffold for single-note spend + change.
-- `sdk/client/`: Deposit/proof payload generation, x402 retry client, note encryption.
-- `sdk/merchant/`: Challenge issuing, payment verification, settlement records, withdrawal signing.
-- `services/merchant-gateway/`: Express middleware enforcing shielded x402 payment.
-- `services/payment-relayer/`: Verifies agent-generated proof bundles, settles onchain, and runs payout adapters for merchant-unchanged deployments.
-- `packages/shared-types/`: Canonical crypto constants and payload schemas.
-- `packages/erc8004-adapter/`: ERC-8004 directory client + provider model (onchain canonical identity + optional indexer enrichment).
-- `sdk/client/src/agentPaymentFetch.ts`: High-level A2A wrapper (`url` or `erc8004` target).
+- `contracts/`: `ShieldedPool`, verifier adapters, `CreditChannelSettlement`.
+- `circuits/spend_change/`: Noir spend/change circuit.
+- `sdk/client/`: proof payload building, credit client/fetch, wallet state, A2A routing.
+- `sdk/merchant/`: challenge issuance + payload verification utilities.
+- `services/payment-relayer/`: credit topup/pay/close APIs + payout adapters.
+- `packages/shared-types/`: canonical types, hashes, route constants.
+- `packages/erc8004-adapter/`: discovery providers and canonical profile normalization.
 
-## Discovery/trust boundary
+## Primary Flow (Credit Lane)
 
-- Discovery and counterparty policy run in the SDK.
-- Settlement, nullifier/root checks, and payout execution run in the relayer.
-- Cryptographic validity remains enforced onchain by pool/verifier contracts.
-- Relayer does not apply trust gating to counterparties.
+1. Merchant returns `402` with `PAYMENT-REQUIRED`.
+2. Agent ensures channel has credit:
+   - if missing/insufficient: proof-backed topup via `/v1/relay/credit/topup`.
+3. Agent sends signed debit intent via `/v1/relay/credit/pay`.
+4. Relayer validates state/debit, executes payout adapter call, and returns next signed state.
+5. Agent persists next signed state.
 
-## HTTP flow
+## Safety Controls
 
-1. Client calls paid endpoint without payment headers.
-2. Merchant middleware returns `402` + `PAYMENT-REQUIRED` (base64 x402 v2 envelope).
-3. Client builds shielded payment payload and signs it.
-4. Client retries with `PAYMENT-SIGNATURE` (base64 signed payment envelope).
-5. Merchant validates nonce freshness, signature, and onchain proof/nullifier checks, then serves data.
+- sequential channel rule (`nextSeq = currentSeq + 1`)
+- debit intent binds to `merchantRequestHash`
+- per-channel relayer lock + head compare-and-swap
+- persisted head store for restart safety
+- mandatory `requestId` for idempotency
 
-## Feature flags
+## Close / Dispute Path
 
-- `ENABLE_ERC8004=true` enables ERC-8004 adapter lookup endpoint behavior.
-- `FIXED_CHALLENGE_NONCE` allows deterministic challenge issuance for live fixture-based E2E.
+When enabled (`CREDIT_SETTLEMENT_CONTRACT`):
 
-## Sequence (direct gateway mode)
+- `POST /v1/relay/credit/close/start`
+- `POST /v1/relay/credit/close/challenge`
+- `POST /v1/relay/credit/close/finalize`
+- `GET /v1/relay/credit/close/:channelId`
 
-```mermaid
-sequenceDiagram
-  participant C as Client SDK
-  participant M as Merchant Gateway
-  participant P as Shielded Pool
-  participant V as UltraVerifier
+## Discovery Boundary
 
-  C->>M: GET /paid/data
-  M-->>C: 402 + payment requirement
-  C->>C: Build proof payload + sign
-  C->>M: Retry with PAYMENT-SIGNATURE
-  M->>P: isNullifierUsed / isKnownRoot
-  M->>V: verify(proof, publicInputs)
-  V-->>M: true/false
-  M-->>C: 200 OK + protected payload
-```
+- ERC-8004 discovery runs in SDK (endpoint selection only).
+- Settlement correctness remains cryptographic and relayer/onchain enforced.
 
-## Sequence (relayer mode, merchant unchanged)
+## Sequence
 
 ```mermaid
 sequenceDiagram
+  autonumber
   participant A as Agent SDK
-  participant M as Merchant Endpoint
+  participant M as Merchant API
   participant R as Payment Relayer
-  participant P as Shielded Pool
-  participant V as UltraVerifier
+  participant P as ShieldedPool
 
-  A->>M: GET /paid/data
+  A->>M: Request paid resource
   M-->>A: 402 + PAYMENT-REQUIRED
-  A->>A: Build proof payload + sign locally
-  A->>R: POST /v1/relay/pay
-  R->>M: GET challenge (refetch/verify)
-  R->>P: isNullifierUsed / isKnownRoot
-  R->>V: verify(proof, publicInputs)
-  V-->>R: true/false
-  R->>P: submitSpend(...)
-  P-->>R: settlement confirmed
-  R->>M: payout adapter call
+
+  alt credit missing or insufficient
+    A->>A: Build proof-backed payment payload
+    A->>R: POST /v1/relay/credit/topup
+    R->>P: settle onchain
+    R-->>A: next signed credit state
+  end
+
+  A->>R: POST /v1/relay/credit/pay
+  R->>R: validate latest state + debit intent
+  R->>M: execute payout adapter request
   M-->>R: merchant response
-  R-->>A: response + settlement metadata
+  R-->>A: merchant response + next signed state
 ```
-
-## Relayer mode (merchant unchanged)
-
-1. Agent requests merchant endpoint and gets standard `402` challenge.
-2. Agent locally generates shielded proof + signature.
-3. Agent sends bundle to `payment-relayer` (`POST /v1/relay/pay`).
-4. Relayer refetches merchant requirement and checks challenge bindings.
-5. Relayer verifies proof/nullifier/root checks and submits `ShieldedPool.submitSpend`.
-6. After onchain confirmation, relayer executes payout adapter against merchant.
-7. Relayer returns merchant response and settlement metadata to the agent.

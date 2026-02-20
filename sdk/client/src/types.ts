@@ -52,10 +52,6 @@ export interface ShieldedClientConfig {
   proofProvider?: ProofProvider;
 }
 
-export interface Parsed402 {
-  requirement: PaymentRequirement;
-}
-
 export interface Prepared402Payment {
   requirement: PaymentRequirement;
   headers: Headers;

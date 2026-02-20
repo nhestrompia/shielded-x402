@@ -2,7 +2,7 @@ import {
   X402_HEADERS,
   buildPaymentSignatureHeader,
   normalizeRequirement,
-  parsePaymentRequiredHeader,
+  toHexWord,
   type Hex,
   type PaymentRequirement,
   type ShieldedNote,
@@ -12,7 +12,6 @@ import { randomBytes } from 'node:crypto';
 import { deriveChallengeHash, deriveCommitment, deriveNullifier } from './crypto.js';
 import { deriveWitness, type MerkleWitness } from './merkle.js';
 import type {
-  Parsed402,
   Prepared402Payment,
   ShieldedClientConfig,
   SpendBuildParams,
@@ -68,7 +67,7 @@ export class ShieldedClientSDK {
     const changeNullifierSecret = params.changeNullifierSecret ?? randomFieldHex();
     const changeCommitment = deriveCommitment(changeAmount, changeRho, params.note.pkHash);
     const challengeHash = deriveChallengeHash(params.challengeNonce, params.amount, params.merchantAddress);
-    const amountHex = (`0x${params.amount.toString(16).padStart(64, '0')}` as Hex);
+    const amountHex = toHexWord(params.amount);
 
     const response: ShieldedPaymentResponse = {
       proof: '0x00',
@@ -155,12 +154,6 @@ export class ShieldedClientSDK {
     return { payload, signature, paymentSignatureHeader };
   }
 
-  parse402Response(response: Response): Parsed402 {
-    const header = response.headers.get(X402_HEADERS.paymentRequired);
-    if (!header) throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
-    return { requirement: parsePaymentRequiredHeader(header) };
-  }
-
   async prepare402Payment(
     requirement: PaymentRequirement,
     note: ShieldedNote,
@@ -203,43 +196,6 @@ export class ShieldedClientSDK {
       changeNote: bundleWithProof.changeNote,
       changeNullifierSecret: bundleWithProof.changeNullifierSecret
     };
-  }
-
-  async complete402Payment(
-    input: string,
-    init: RequestInit,
-    requirement: PaymentRequirement,
-    note: ShieldedNote,
-    witness: MerkleWitness,
-    nullifierSecret: Hex,
-    fetchFn: typeof fetch = fetch
-  ): Promise<Response> {
-    const prepared = await this.prepare402Payment(
-      requirement,
-      note,
-      witness,
-      nullifierSecret,
-      init.headers
-    );
-
-    return fetchFn(input, {
-      ...init,
-      headers: prepared.headers
-    });
-  }
-
-  async fetchWithShieldedPayment(
-    input: string,
-    init: RequestInit,
-    note: ShieldedNote,
-    witness: MerkleWitness,
-    nullifierSecret: Hex
-  ): Promise<Response> {
-    const first = await fetch(input, init);
-    if (first.status !== 402) return first;
-
-    const parsed = this.parse402Response(first);
-    return this.complete402Payment(input, init, parsed.requirement, note, witness, nullifierSecret);
   }
 }
 

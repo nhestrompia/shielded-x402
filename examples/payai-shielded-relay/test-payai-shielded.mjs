@@ -1,12 +1,20 @@
-import 'dotenv/config';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { config as loadEnv } from 'dotenv';
 import {
+  createCreditChannelClient,
+  createCreditShieldedFetch,
   FileBackedWalletState,
   ShieldedClientSDK,
   createNoirJsProofProviderFromDefaultCircuit,
-  createShieldedFetch,
   deriveCommitment
 } from '@shielded-x402/client';
+import { randomBytes } from 'node:crypto';
 import { privateKeyToAccount } from 'viem/accounts';
+
+const here = dirname(fileURLToPath(import.meta.url));
+// Load only example-local env to avoid root-level leakage between demos.
+loadEnv({ path: resolve(here, '.env'), override: true });
 
 const toWord = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
 const parseEnvBigInt = (key, fallback) => {
@@ -31,6 +39,7 @@ const isFieldSafeHex = (value) => {
 };
 
 const relayerEndpoint = process.env.RELAYER_ENDPOINT ?? 'http://127.0.0.1:3100';
+const creditRelayerEndpoint = process.env.CREDIT_RELAYER_ENDPOINT ?? relayerEndpoint;
 const payaiUrl = process.env.PAYAI_URL ?? 'https://x402.payai.network/api/base-sepolia/paid-content';
 const poolRpcUrl = process.env.POOL_RPC_URL?.trim() || undefined;
 const walletIndexerUrl = process.env.WALLET_INDEXER_URL;
@@ -45,9 +54,25 @@ const noteRho = toWord(parseEnvBigInt('NOTE_RHO', 42n));
 const notePkHash = toWord(parseEnvBigInt('NOTE_PK_HASH', 11n));
 const nullifierSecret = toWord(parseEnvBigInt('NULLIFIER_SECRET', 9n));
 const preferredCommitment = process.env.NOTE_COMMITMENT?.trim().toLowerCase();
+const configuredChannelId = process.env.CREDIT_CHANNEL_ID?.trim();
+const creditTopupIfMissing = parseEnvBoolean('CREDIT_TOPUP_IF_MISSING', true);
+const creditTopupAmountMicros = parseEnvBigInt('CREDIT_TOPUP_AMOUNT_MICROS', 1000000n);
+const creditTopupChallengeTtlSeconds = Number(process.env.CREDIT_TOPUP_CHALLENGE_TTL_SECONDS ?? '600');
+const creditNetwork = process.env.CREDIT_NETWORK ?? 'eip155:84532';
+const creditAsset =
+  process.env.CREDIT_ASSET ??
+  '0x0000000000000000000000000000000000000000000000000000000000000000';
+const creditPayTo = process.env.CREDIT_PAY_TO ?? shieldedPoolAddress;
+const creditMerchantPubKey =
+  process.env.CREDIT_MERCHANT_PUBKEY ??
+  '0x1111111111111111111111111111111111111111111111111111111111111111';
+const creditVerifyingContract = process.env.CREDIT_VERIFYING_CONTRACT ?? shieldedPoolAddress;
 
 if (!payerPrivateKey || !payerPrivateKey.startsWith('0x')) {
   throw new Error('Set PAYER_PRIVATE_KEY in .env');
+}
+if (configuredChannelId && !/^0x[0-9a-fA-F]{64}$/.test(configuredChannelId)) {
+  throw new Error('If set, CREDIT_CHANNEL_ID must be a bytes32 hex string');
 }
 if (!poolRpcUrl && !walletIndexerUrl) {
   throw new Error('Set WALLET_INDEXER_URL or POOL_RPC_URL (or SEPOLIA_RPC_URL) in .env');
@@ -128,6 +153,15 @@ const pickSpendableNote = (requiredAmount) => {
   return notes[0];
 };
 
+const parsePaymentSignatureHeader = (rawHeader) => {
+  const decoded = Buffer.from(rawHeader, 'base64').toString('utf8');
+  const envelope = JSON.parse(decoded);
+  if (!envelope || envelope.x402Version !== 2 || typeof envelope.signature !== 'string') {
+    throw new Error('invalid PAYMENT-SIGNATURE envelope');
+  }
+  return envelope;
+};
+
 const resolveWalletContext = async (forceSync) => {
   if (forceSync) {
     syncResult = await walletState.sync();
@@ -152,51 +186,100 @@ try {
   throw new Error(`${hint} | cause=${error instanceof Error ? error.message : String(error)}`);
 }
 
-const shieldedFetch = createShieldedFetch({
-  sdk,
-  relayerEndpoint,
-  onRelayerSettlement: async ({ relayResponse, prepared, context }) => {
-    if (relayResponse.settlementDelta) {
-      await walletState.applyRelayerSettlement({
-        settlementDelta: relayResponse.settlementDelta,
-        changeNote: prepared.changeNote,
-        changeNullifierSecret: prepared.changeNullifierSecret,
-        spentNoteCommitment: context.note.commitment
-      });
-      return;
-    }
-
-    const failureReason = relayResponse.failureReason?.toLowerCase() ?? '';
-    if (
-      relayResponse.status === 'FAILED' &&
-      failureReason.includes('nullifier already used')
-    ) {
-      await walletState.markNoteSpent(context.note.commitment);
-      return;
-    }
-
-    if (relayResponse.status !== 'DONE') {
-      return;
-    }
+const creditClient = createCreditChannelClient({
+  relayerEndpoint: creditRelayerEndpoint,
+  ...(configuredChannelId ? { channelId: configuredChannelId } : {}),
+  agentAddress: account.address,
+  signer: {
+    signTypedData: (args) => account.signTypedData(args)
   },
-  resolveContext: async ({ requirement }) => {
-    const requiredAmount = BigInt(requirement.amount);
-    const selected = pickSpendableNote(requiredAmount);
-    if (!selected) {
-      throw new Error(
-        [
-          'no spendable note found in wallet-state',
-          `requirement.amount=${requiredAmount.toString()}`,
-          'Deposit a new note with secrets (npm run seed-note) and/or sync wallet state, then retry.',
-          `statePath=${walletStatePath}`
-        ].join(' | ')
-      );
-    }
-
-    return walletState.getSpendContextByCommitment(selected.commitment);
-  }
+  stateStore: walletState
 });
-console.log(`[1/2] Calling existing x402 merchant endpoint: ${payaiUrl}`);
+
+const ensureCreditTopup = async () => {
+  const resolvedChannelId = await creditClient.getChannelId();
+  console.log(`[credit] channelId=${resolvedChannelId}${configuredChannelId ? ' (configured)' : ' (derived)'}`);
+  const existing = creditClient.getLatestState();
+  if (existing) {
+    console.log(
+      `[credit] existing channel state seq=${existing.state.seq} available=${existing.state.available}`
+    );
+    return resolvedChannelId;
+  }
+
+  if (!creditTopupIfMissing) {
+    throw new Error('No credit state found and CREDIT_TOPUP_IF_MISSING=false');
+  }
+  if (!creditPayTo || !creditPayTo.startsWith('0x')) {
+    throw new Error('CREDIT_PAY_TO (or SHIELDED_POOL_ADDRESS) is required for credit topup');
+  }
+  if (!creditVerifyingContract || !creditVerifyingContract.startsWith('0x')) {
+    throw new Error(
+      'CREDIT_VERIFYING_CONTRACT (or SHIELDED_POOL_ADDRESS) is required for credit topup'
+    );
+  }
+
+  const selected = pickSpendableNote(creditTopupAmountMicros);
+  if (!selected) {
+    throw new Error(
+      [
+        'no spendable note found in wallet-state for credit topup',
+        `topup.amount=${creditTopupAmountMicros.toString()}`,
+        'Deposit a new note with secrets (npm run seed-note) and/or sync wallet state, then retry.',
+        `statePath=${walletStatePath}`
+      ].join(' | ')
+    );
+  }
+
+  const context = walletState.getSpendContextByCommitment(selected.commitment);
+  const challengeNonce = `0x${randomBytes(32).toString('hex')}`;
+  const prepared = await sdk.prepare402Payment(
+    {
+      x402Version: 2,
+      scheme: 'exact',
+      network: creditNetwork,
+      asset: creditAsset,
+      payTo: creditPayTo,
+      rail: 'shielded-usdc',
+      amount: creditTopupAmountMicros.toString(),
+      challengeNonce,
+      challengeExpiry: String(Math.floor(Date.now() / 1000) + creditTopupChallengeTtlSeconds),
+      merchantPubKey: creditMerchantPubKey,
+      verifyingContract: creditVerifyingContract
+    },
+    context.note,
+    context.witness,
+    context.nullifierSecret
+  );
+
+  const paymentHeader = prepared.headers.get('PAYMENT-SIGNATURE');
+  if (!paymentHeader) {
+    throw new Error('failed to create PAYMENT-SIGNATURE header for topup');
+  }
+  const paymentEnvelope = parsePaymentSignatureHeader(paymentHeader);
+  const topupResult = await creditClient.topup({
+    requestId: `credit-topup-${Date.now()}`,
+    paymentPayload: prepared.response,
+    paymentPayloadSignature: paymentEnvelope.signature
+  });
+  if (topupResult.status !== 'DONE') {
+    throw new Error(topupResult.failureReason ?? 'credit topup failed');
+  }
+
+  await walletState.markNoteSpent(context.note.commitment);
+  await walletState.addOrUpdateNote(prepared.changeNote, prepared.changeNullifierSecret);
+  console.log(
+    `[credit] topup complete seq=${topupResult.nextState?.seq ?? 'n/a'} available=${topupResult.nextState?.available ?? 'n/a'}`
+  );
+  return resolvedChannelId;
+};
+
+const resolvedChannelId = await ensureCreditTopup();
+
+const creditFetch = createCreditShieldedFetch({
+  creditClient
+});
+console.log(`[1/2] Calling existing x402 merchant endpoint via credit lane: ${payaiUrl}`);
 console.log(
   [
     `[config] seedNoteAmount=${note.amount.toString()}`,
@@ -204,6 +287,10 @@ console.log(
     `preferredCommitment=${preferredCommitment ?? 'none'}`,
     `nullifierSecret=${nullifierSecret}`,
     `witnessMode=wallet-state`,
+    `creditMode=true`,
+    `creditRelayer=${creditRelayerEndpoint}`,
+    `creditChannelId=${resolvedChannelId}`,
+    `creditTopupAmount=${creditTopupAmountMicros.toString()}`,
     `syncSource=${walletIndexerUrl ? 'indexer' : 'rpc'}`,
     `statePath=${walletStatePath}`,
     `syncMode=${syncResult ? 'synced' : 'cached'}`,
@@ -219,7 +306,7 @@ console.log(
 );
 
 const startedAt = Date.now();
-const response = await shieldedFetch(payaiUrl, { method: 'GET' });
+const response = await creditFetch(payaiUrl, { method: 'GET' });
 const elapsed = Date.now() - startedAt;
 
 console.log(`[2/2] status=${response.status} (${elapsed}ms)`);

@@ -14,8 +14,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-loadEnv({ path: resolve(here, '../../.env') });
-loadEnv({ path: resolve(here, '.env') });
+loadEnv({ path: resolve(here, '.env'), override: true });
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -45,12 +44,12 @@ const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS;
 const walletStatePath = process.env.WALLET_STATE_PATH ?? './wallet-state.json';
 const walletIndexerUrl = process.env.WALLET_INDEXER_URL;
 const poolFromBlock = parseEnvBigInt('POOL_FROM_BLOCK', 0n);
-const noteAmount = parseEnvBigInt('NOTE_AMOUNT', 20_000n);
+const noteAmount = parseEnvBigInt('NOTE_AMOUNT', 1_000_000n);
 const notePkHash = toWord(parseEnvBigInt('NOTE_PK_HASH', 11n));
 const depositorPrivateKey =
   process.env.DEPOSITOR_PRIVATE_KEY ??
-  process.env.DEPLOYER_PRIVATE_KEY ??
-  process.env.PAYER_PRIVATE_KEY;
+  process.env.PAYER_PRIVATE_KEY ??
+  process.env.DEPLOYER_PRIVATE_KEY;
 
 if (!rpcUrl) throw new Error('Set BASE_SEPOLIA_RPC_URL (or POOL_RPC_URL/SEPOLIA_RPC_URL)');
 if (!usdcAddress || !isAddress(usdcAddress)) throw new Error('Set valid USDC_ADDRESS');
@@ -124,6 +123,21 @@ const usdcBalance = await publicClient.readContract({
 if (usdcBalance < noteAmount) {
   throw new Error(
     `insufficient USDC balance for depositor ${account.address}: balance=${usdcBalance.toString()} required=${noteAmount.toString()}`
+  );
+}
+
+const nativeBalance = await publicClient.getBalance({ address: account.address });
+const chainId = await publicClient.getChainId();
+const minimumNativeForGasWei = 10_000_000_000_000n; // 0.00001 ETH
+if (nativeBalance < minimumNativeForGasWei) {
+  throw new Error(
+    [
+      `insufficient native gas balance for depositor ${account.address}`,
+      `chainId=${chainId}`,
+      `nativeBalanceWei=${nativeBalance.toString()}`,
+      `requiredAtLeastWei=${minimumNativeForGasWei.toString()}`,
+      'Fund this address with Base Sepolia ETH and retry seed-note.'
+    ].join(' | ')
   );
 }
 

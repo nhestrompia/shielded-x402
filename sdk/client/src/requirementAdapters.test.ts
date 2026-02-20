@@ -1,4 +1,9 @@
-import { X402_HEADERS, buildPaymentRequiredHeader, type PaymentRequirement } from '@shielded-x402/shared-types';
+import {
+  X402_HEADERS,
+  buildPaymentRequiredHeader,
+  encodeX402Header,
+  type PaymentRequirement
+} from '@shielded-x402/shared-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createGenericX402V2Adapter,
@@ -54,6 +59,37 @@ describe('requirementAdapters', () => {
         [createGenericX402V2Adapter()]
       )
     ).rejects.toThrow(`missing ${X402_HEADERS.paymentRequired} header`);
+  });
+
+  it('repairs direct payment-required headers missing shielded metadata', async () => {
+    const header = encodeX402Header({
+      x402Version: 2 as const,
+      accepts: [
+        {
+          scheme: 'exact',
+          network: 'base-sepolia',
+          payTo: '0x00000000000000000000000000000000000000aa',
+          maxAmountRequired: '4000'
+        }
+      ]
+    });
+    const response = new Response(null, {
+      status: 402,
+      headers: { [X402_HEADERS.paymentRequired]: header }
+    });
+
+    const parsed = await parseRequirementFrom402Response(
+      response,
+      { requestUrl: 'https://merchant.example.com/paid' },
+      [createGenericX402V2Adapter()]
+    );
+
+    expect(parsed.requirement.amount).toBe('4000');
+    expect(parsed.requirement.rail).toBe('x402-standard');
+    expect(parsed.requirement.challengeNonce).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(parsed.requirement.verifyingContract).toBe(
+      '0x00000000000000000000000000000000000000aa'
+    );
   });
 
   it('applies first incoming adapter transform and then stops incoming chain', async () => {
@@ -118,4 +154,3 @@ describe('requirementAdapters', () => {
     expect(rewritten.get('x-b')).toBe('2');
   });
 });
-

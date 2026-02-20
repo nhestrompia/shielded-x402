@@ -1,249 +1,105 @@
 # Agent Integration Guide (Shielded x402)
 
-This guide is for AI agents or agent frameworks that currently support normal x402 and want to use the shielded rail in this repo.
+This guide describes the current production path: credit-channel payments.
 
-## What this rail is
+## Core Model
 
-- Payment protocol: x402 retry flow (`402 -> retry with payment headers`).
-- Shielded rail id: `shielded-usdc`.
-- Payment payload: proof bundle + public inputs (`ShieldedPaymentResponse`).
-- Merchant gateway endpoints:
-  - `GET /paid/data` (protected resource)
-  - `GET /x402/requirement` (optional prefetch of a fresh challenge)
-  - `GET /health`
-  - `GET /agent/:did`, `GET /agent/:did/reputation`, `POST /agent` (ERC-8004 adapter endpoints, optional)
-- Payment relayer endpoints:
-  - `POST /v1/relay/pay`
-  - `GET /v1/relay/status/:settlementId`
-  - `GET /health`
+1. Agent holds shielded notes locally.
+2. Agent sends one proof-backed topup to relayer.
+3. Agent sends signature-only debit intents per paid call.
+4. Agent persists the returned co-signed state each time.
 
-## Merchant-side compatibility model
+## Required Relayer Endpoints
 
-- Merchants keep the same x402 HTTP contract (`402` challenge + retry headers).
-- Agent keeps proof generation local.
-- Relayer verifies challenge/proof bindings, settles onchain, then executes merchant payout adapter.
-- Merchant integration stays unchanged.
+- `POST /v1/relay/credit/domain`
+- `POST /v1/relay/credit/topup`
+- `POST /v1/relay/credit/pay`
+- `POST /v1/relay/credit/close/start`
+- `POST /v1/relay/credit/close/challenge`
+- `POST /v1/relay/credit/close/finalize`
+- `GET /v1/relay/credit/close/:channelId`
 
-## Header contract (strict)
+## Required Headers / Wire
 
-- Challenge response header: `PAYMENT-REQUIRED` (base64 x402 v2 envelope).
-- Retry request header: `PAYMENT-SIGNATURE` (base64 signed payment envelope).
+Merchant challenge/accept path remains x402-style:
 
-Use constants from `/shielded-402/packages/shared-types/src/x402.ts`.
+- `PAYMENT-REQUIRED` on `402`
+- `PAYMENT-SIGNATURE` for signed payment envelope payloads
 
-## How agents should decide rail
+Use constants and parsers from `@shielded-x402/shared-types`.
 
-Use this decision rule:
+## Fast Path (Per Call)
 
-1. Send request normally.
+For each request:
+
+1. Request merchant endpoint.
 2. If status is not `402`, return response.
-3. Parse `PAYMENT-REQUIRED`.
-4. If `rail === "shielded-usdc"`, run shielded flow.
-5. Otherwise, if using relayed mode (`createShieldedFetch({ relayerEndpoint })`), the SDK asks relayer to issue a shielded bridge challenge and continues shielded flow.
-6. If bridge is unavailable, run your existing normal x402 flow.
+3. Parse requirement.
+4. Build debit intent against latest signed state.
+5. Call `/v1/relay/credit/pay`.
+6. Persist returned next state.
 
-This keeps compatibility with endpoints that may mix rails.
+Rules enforced:
 
-## Agent flow: shielded payment
+- strict sequencing (`nextSeq = currentSeq + 1`)
+- request idempotency via `requestId`
+- debit bound to canonical `merchantRequestHash`
 
-### Prerequisite: agent must fund the shielded pool
+## Topup Path
 
-Before any paid request, the agent must hold a spendable note:
+Topup is required before fast debits if no channel state exists.
 
-1. Approve and deposit ERC-20 into `ShieldedPool`.
-2. Index the `Deposited` event and derive/store:
-   - note `{ amount, rho, pkHash, commitment, leafIndex }`
-   - current Merkle witness for that note.
-3. Only then can the agent generate a valid spend proof.
+1. Select a spendable note.
+2. Build proof-backed shielded payment payload.
+3. Submit `/v1/relay/credit/topup`.
+4. Persist returned signed state.
+5. Mark input note spent and persist change note.
 
-Without this deposit+note state, proof generation will succeed structurally but settlement will fail onchain.
+## Trust Model
 
-1. Receive `402` and parse requirement:
-   - `amount`
-   - `challengeNonce`
-   - `merchantPubKey`
-   - `verifyingContract`
-2. Build witness from local note/Merkle state.
-3. Call client SDK:
-   - preferred single entrypoint: `createShieldedFetch(...)`
-   - relayed mode: pass `relayerEndpoint` in `createShieldedFetch(...)`
-   - direct merchant mode: omit `relayerEndpoint`
-   - configure `proofProvider` with `createNoirJsProofProviderFromDefaultCircuit()` for in-process proving
-4. Wrapper posts the proof bundle to relayer (`/v1/relay/pay`).
-5. Relayer settles onchain and returns merchant response.
-6. On `200`, treat as settled for API access.
+Credit mode is optimistic offchain state progression while channel is open.
 
-Fast-start option for agents:
+- Relayer has custody/trust assumptions for prepaid balance.
+- Close/challenge/finalize provides onchain dispute/settlement path.
 
-1. Call `GET /x402/requirement` first.
-2. Start proof generation immediately with that nonce.
-3. Send the paid request once headers are ready (often avoids an extra round trip).
-4. If merchant returns `402` again (expired/stale nonce), request a new `PAYMENT-REQUIRED` and regenerate.
+## SDK Integration Pattern
 
-Reference implementation:
+Use `@shielded-x402/client` primitives:
 
-- `/shielded-402/sdk/client/src/client.ts`
+- `createCreditChannelClient`
+- `createCreditShieldedFetch`
+- `createCreditCloseClient`
+- `FileBackedWalletState`
 
-## Example wrapper for mixed rails
+For discovery/routing:
 
-```ts
-import { ShieldedClientSDK } from "@shielded-x402/client";
-import { X402_HEADERS } from "@shielded-x402/shared-types";
+- `createAgentPaymentFetch` with ERC-8004 directory providers.
 
-export async function fetchWithAnyRail(
-  url: string,
-  init: RequestInit,
-  ctx: {
-    shielded: ShieldedClientSDK;
-    note: any;
-    witness: any;
-    nullifierSecret: `0x${string}`;
-    payNormalX402: (req: Response) => Promise<Response>;
-  },
-): Promise<Response> {
-  const first = await fetch(url, init);
-  if (first.status !== 402) return first;
+## ERC-8004 Discovery (Optional)
 
-  const requirementRaw = first.headers.get(X402_HEADERS.paymentRequired);
-  if (!requirementRaw) throw new Error("missing PAYMENT-REQUIRED");
-  const requirement = ctx.shielded.parse402Response(first).requirement;
+Discovery determines *where* to call, not settlement correctness.
 
-  if (requirement.rail === "shielded-usdc") {
-    return ctx.shielded.fetchWithShieldedPayment(
-      url,
-      init,
-      ctx.note,
-      ctx.witness,
-      ctx.nullifierSecret,
-    );
-  }
+1. Resolve profile from directory providers.
+2. Select endpoint deterministically.
+3. Execute credit payment fetch on selected URL.
 
-  return ctx.payNormalX402(first);
-}
-```
+If directory is unavailable, direct URL mode still works.
 
-## ERC-8004 discovery (optional, SDK-side)
+## Operational Checklist
 
-Use directory providers in the client SDK; relayer remains trust-neutral.
+1. Persist wallet state to durable storage.
+2. Keep `requestId` unique per debit.
+3. Keep relayer domain (`chainId`, `verifyingContract`) consistent.
+4. Run periodic `wallet.sync()` to keep witness/leaf data current.
+5. Treat concurrent debits per channel as sequential (SDK already queues per client instance).
 
-1. Build a directory client with one or more providers:
-   - your Envio GraphQL provider (`createEnvioGraphqlProvider`) as primary source
-   - onchain registry provider (canonical identity fallback)
-   - optional scan/indexer provider (trust/health enrichment)
-2. Resolve ERC-8004 target `{ chainId, tokenId }` to canonical profile.
-3. Rank endpoints with deterministic fixed-snapshot policy.
-4. Execute payment through `createAgentPaymentFetch`.
+## Test Checklist
 
-Reference:
-
-- `/Users/nhestrompia/Projects/shielded-402/packages/erc8004-adapter/src/client.ts`
-- `/Users/nhestrompia/Projects/shielded-402/packages/erc8004-adapter/src/providers/envioGraphqlProvider.ts`
-- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/agentPaymentFetch.ts`
-- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/counterpartyPolicy.ts`
-
-## Why ERC-8004 is optional
-
-1. Settlement correctness does not depend on registry metadata.
-2. The payment decision remains enforced by x402 challenge binding + proof verification + nullifier/root checks.
-3. ERC-8004 may be unavailable or evolving (draft), but direct shielded x402 calls must still work.
-4. Therefore the adapter is feature-gated and non-blocking.
-
-## Requirement adapters (generic x402 v2)
-
-Different providers may vary in `402` body/header shape. The SDK normalizes through an adapter chain:
-
-- built-in: `createGenericX402V2Adapter()`
-- custom adapters: incoming normalization + requirement normalization + outgoing header rewrite
-
-This keeps core SDK neutral while allowing provider-specific overrides when needed.
-
-Reference:
-
-- `/Users/nhestrompia/Projects/shielded-402/sdk/client/src/requirementAdapters.ts`
-
-## How to utilize ERC-8004 exactly
-
-1. Enable in gateway:
-   - `ENABLE_ERC8004=true`
-   - `ERC8004_REGISTRY_URL=<registry base url>`
-2. Merchant publishes/updates capability:
-   - `POST /agent` with `AgentRecord` including `supportedRails: ["shielded-usdc"]`.
-3. Agent resolves routing metadata:
-   - `GET /agent/:did`
-   - `GET /agent/:did/reputation` (optional reputation signal)
-4. If `supportedRails` contains `shielded-usdc`, route paid calls to this rail.
-5. Execute the normal shielded x402 retry flow on the selected endpoint.
-
-## Testing plan for agents
-
-Full step-by-step commands:
-
-- `/shielded-402/docs/testing-playbook.md`
-
-### Level 1: local SDK/unit baseline
-
-Run:
-
-- `pnpm typecheck`
-- `pnpm test`
-- `pnpm contracts:test`
-- `pnpm circuit:check`
-
-Goal: verify local code paths and constraints compile.
-
-### Level 2: local HTTP handshake
-
-1. Start relayer:
-   - `pnpm relayer:dev`
-2. Start merchant endpoint:
-   - `pnpm --filter @shielded-x402/merchant-gateway dev`
-3. Run demo client:
-   - `pnpm --filter @shielded-x402/demo-api demo`
-
-Goal: verify `402 -> retry -> 200` behavior and header handling.
-
-### Level 3: live Sepolia verification
-
-1. Set `.env` with real addresses and RPC.
-2. Generate verifier + fixture:
-   - `pnpm circuit:verifier`
-   - `pnpm circuit:fixture`
-3. Start relayer with onchain verifier + settlement env.
-4. Run:
-   - `pnpm test:sepolia-live`
-
-Goal: verify root/nullifier checks + proof verification against deployed contracts.
-
-## Hardcoded values you should review
-
-The following are intentional defaults for MVP/dev, but should be explicitly set in production:
-
-1. Placeholder merchant config defaults in gateway:
-   - `/shielded-402/services/merchant-gateway/src/server.ts`
-   - Fallback `merchantPubKey` and `verifyingContract` are non-production placeholders.
-2. Default price:
-   - `PRICE_USDC_MICROS` default `1000000` (1 USDC) in gateway and `.env.example`.
-3. Fixed rail name:
-   - Type-level rail is currently `'shielded-usdc'` in `/shielded-402/packages/shared-types/src/types.ts`.
-4. Challenge domain hash constants:
-   - `/shielded-402/sdk/client/src/crypto.ts`
-   - `/shielded-402/sdk/merchant/src/merchant.ts`
-   - `/shielded-402/circuits/spend_change/src/main.nr`
-   - These must remain identical across circuit/client/merchant.
-5. Merkle depth constant:
-   - Circuit path depth and contract tree depth are fixed to `24`.
-6. Dev-only deterministic nonce:
-   - `FIXED_CHALLENGE_NONCE` should be set only for deterministic tests.
-7. Demo private key:
-   - `/shielded-402/examples/demo-api/src/run-demo.ts` uses a hardcoded key for local demo only.
-8. Chain/RPC selection:
-   - Onchain verifier client uses the configured RPC endpoint. Ensure your `SEPOLIA_RPC_URL` (or local RPC) points to the same network where pool/verifier are deployed.
-
-## Production checklist for agent operators
-
-1. Set all env values; do not rely on fallbacks.
-2. Disable `FIXED_CHALLENGE_NONCE`.
-3. Use real signer keys and secure key storage.
-4. Keep challenge TTL short and monitor replay failures.
-5. Keep proof verifier and circuit artifacts in sync per deployment.
-6. If enabling ERC-8004, treat it as discovery/routing only (not settlement correctness).
+1. `pnpm typecheck`
+2. `pnpm test`
+3. `pnpm contracts:test`
+4. Relayer tests:
+   - `pnpm --filter @shielded-x402/payment-relayer test`
+5. Example smoke runs:
+   - `examples/agent-to-agent-relayed`
+   - `examples/payai-shielded-relay`

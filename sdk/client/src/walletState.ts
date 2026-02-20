@@ -1,9 +1,17 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { Hex, RelayerSettlementDelta, ShieldedNote } from '@shielded-x402/shared-types';
+import type {
+  CreditChannelId,
+  Hex,
+  RelayerSettlementDelta,
+  ShieldedNote,
+  SignedCreditState
+} from '@shielded-x402/shared-types';
+import { normalizeHex } from '@shielded-x402/shared-types';
 import { createPublicClient, http, parseAbiItem } from 'viem';
 import type { MerkleWitness } from './merkle.js';
 import { deriveWitness } from './merkle.js';
+import { postJson } from './http.js';
 
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as Hex;
 
@@ -14,6 +22,26 @@ const depositedEvent = parseAbiItem(
 const spentEvent = parseAbiItem(
   'event Spent(bytes32 indexed nullifier, bytes32 indexed merchantCommitment, bytes32 indexed changeCommitment, uint256 amount, bytes32 challengeHash, uint256 merchantLeafIndex, uint256 changeLeafIndex, bytes32 newRoot)'
 );
+const INDEXER_PAGE_SIZE = 500;
+
+interface IndexerDepositRow {
+  id: string;
+  commitment: Hex;
+  leafIndex: string;
+}
+
+interface IndexerSpendRow {
+  id: string;
+  merchantCommitment: Hex;
+  changeCommitment: Hex;
+  merchantLeafIndex: string;
+  changeLeafIndex: string;
+}
+
+interface IndexerEventsRows {
+  deposits: IndexerDepositRow[];
+  spends: IndexerSpendRow[];
+}
 
 interface PersistedNote {
   amount: string;
@@ -26,12 +54,28 @@ interface PersistedNote {
   spent?: boolean;
 }
 
+interface PersistedSignedCreditState {
+  state: {
+    channelId: Hex;
+    seq: string;
+    available: string;
+    cumulativeSpent: string;
+    lastDebitDigest: Hex;
+    updatedAt: string;
+    agentAddress: Hex;
+    relayerAddress: Hex;
+  };
+  agentSignature: Hex;
+  relayerSignature: Hex;
+}
+
 interface PersistedWalletState {
-  version: 2;
+  version: 3;
   poolAddress: Hex;
   lastSyncedBlock: string;
   commitments: Hex[];
   notes: PersistedNote[];
+  creditStates?: Record<string, PersistedSignedCreditState>;
 }
 
 export interface WalletNoteRecord extends ShieldedNote {
@@ -74,6 +118,7 @@ interface InMemoryWalletState {
   lastSyncedBlock: bigint;
   commitments: Hex[];
   notes: WalletNoteRecord[];
+  creditStates: Record<string, SignedCreditState>;
 }
 
 interface CommitmentWrite {
@@ -84,13 +129,9 @@ interface CommitmentWrite {
   commitment: Hex;
 }
 
-function normalizeHex(value: Hex): Hex {
-  return value.toLowerCase() as Hex;
-}
-
 function serialize(state: InMemoryWalletState, poolAddress: Hex): PersistedWalletState {
   return {
-    version: 2,
+    version: 3,
     poolAddress,
     lastSyncedBlock: state.lastSyncedBlock.toString(),
     commitments: state.commitments,
@@ -103,11 +144,49 @@ function serialize(state: InMemoryWalletState, poolAddress: Hex): PersistedWalle
       leafIndex: note.leafIndex,
       ...(note.depositBlock !== undefined ? { depositBlock: note.depositBlock.toString() } : {}),
       ...(note.spent !== undefined ? { spent: note.spent } : {})
-    }))
+    })),
+    creditStates: Object.fromEntries(
+      Object.entries(state.creditStates).map(([channelId, signed]) => [
+        channelId,
+        {
+          state: {
+            channelId: signed.state.channelId,
+            seq: signed.state.seq,
+            available: signed.state.available,
+            cumulativeSpent: signed.state.cumulativeSpent,
+            lastDebitDigest: signed.state.lastDebitDigest,
+            updatedAt: signed.state.updatedAt,
+            agentAddress: signed.state.agentAddress,
+            relayerAddress: signed.state.relayerAddress
+          },
+          agentSignature: signed.agentSignature,
+          relayerSignature: signed.relayerSignature
+        }
+      ])
+    )
   };
 }
 
 function deserialize(payload: PersistedWalletState): InMemoryWalletState {
+  const persistedCreditStates = payload.creditStates ?? {};
+  const creditStates: Record<string, SignedCreditState> = {};
+  for (const [channelId, signed] of Object.entries(persistedCreditStates)) {
+    creditStates[channelId] = {
+      state: {
+        channelId: signed.state.channelId,
+        seq: signed.state.seq,
+        available: signed.state.available,
+        cumulativeSpent: signed.state.cumulativeSpent,
+        lastDebitDigest: signed.state.lastDebitDigest,
+        updatedAt: signed.state.updatedAt,
+        agentAddress: signed.state.agentAddress,
+        relayerAddress: signed.state.relayerAddress
+      },
+      agentSignature: signed.agentSignature,
+      relayerSignature: signed.relayerSignature
+    };
+  }
+
   return {
     lastSyncedBlock: BigInt(payload.lastSyncedBlock),
     commitments: payload.commitments,
@@ -120,7 +199,8 @@ function deserialize(payload: PersistedWalletState): InMemoryWalletState {
       leafIndex: note.leafIndex,
       ...(note.depositBlock !== undefined ? { depositBlock: BigInt(note.depositBlock) } : {}),
       ...(note.spent !== undefined ? { spent: note.spent } : {})
-    }))
+    })),
+    creditStates
   };
 }
 
@@ -134,6 +214,8 @@ export class FileBackedWalletState {
   private readonly startBlock: bigint;
   private indexerFieldNames?: { deposits: string; spends: string };
   private state: InMemoryWalletState;
+  private noteIndexesByCommitment: Map<string, number[]>;
+  private leafIndexByCommitment: Map<string, number>;
 
   private constructor(config: FileBackedWalletStateConfig) {
     this.filePath = config.filePath;
@@ -146,8 +228,12 @@ export class FileBackedWalletState {
     this.state = {
       lastSyncedBlock: this.startBlock - 1n,
       commitments: [],
-      notes: []
+      notes: [],
+      creditStates: {}
     };
+    this.noteIndexesByCommitment = new Map();
+    this.leafIndexByCommitment = new Map();
+    this.rebuildCommitmentIndexes();
   }
 
   static async create(config: FileBackedWalletStateConfig): Promise<FileBackedWalletState> {
@@ -160,7 +246,7 @@ export class FileBackedWalletState {
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as PersistedWalletState;
-      if (parsed.version !== 2) {
+      if (parsed.version !== 3) {
         throw new Error(`unsupported wallet state version: ${String(parsed.version)}`);
       }
       if (normalizeHex(parsed.poolAddress) !== normalizeHex(this.shieldedPoolAddress)) {
@@ -169,6 +255,7 @@ export class FileBackedWalletState {
         );
       }
       this.state = deserialize(parsed);
+      this.rebuildCommitmentIndexes();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('ENOENT')) {
@@ -198,11 +285,32 @@ export class FileBackedWalletState {
     return this.state.notes.map((note) => ({ ...note }));
   }
 
+  getCreditState(channelId: CreditChannelId): SignedCreditState | undefined {
+    const state = this.state.creditStates[channelId.toLowerCase()];
+    if (!state) return undefined;
+    return {
+      state: { ...state.state },
+      agentSignature: state.agentSignature,
+      relayerSignature: state.relayerSignature
+    };
+  }
+
+  async setCreditState(signedState: SignedCreditState): Promise<void> {
+    this.state.creditStates[signedState.state.channelId.toLowerCase()] = {
+      state: { ...signedState.state },
+      agentSignature: signedState.agentSignature,
+      relayerSignature: signedState.relayerSignature
+    };
+    await this.persist();
+  }
+
+  async clearCreditState(channelId: CreditChannelId): Promise<void> {
+    delete this.state.creditStates[channelId.toLowerCase()];
+    await this.persist();
+  }
+
   async addOrUpdateNote(note: ShieldedNote, nullifierSecret: Hex, depositBlock?: bigint): Promise<void> {
-    const normalizedCommitment = normalizeHex(note.commitment);
-    const existingIndex = this.state.notes.findIndex(
-      (candidate) => normalizeHex(candidate.commitment) === normalizedCommitment
-    );
+    const existingIndex = this.findNoteIndexByCommitment(note.commitment);
     const existing = existingIndex >= 0 ? this.state.notes[existingIndex] : undefined;
     const record: WalletNoteRecord = {
       ...note,
@@ -220,14 +328,12 @@ export class FileBackedWalletState {
     if (record.leafIndex >= 0) {
       this.state.commitments[record.leafIndex] = record.commitment;
     }
+    this.rebuildCommitmentIndexes();
     await this.persist();
   }
 
   async markNoteSpent(commitment: Hex): Promise<boolean> {
-    const normalized = normalizeHex(commitment);
-    const existingIndex = this.state.notes.findIndex(
-      (candidate) => normalizeHex(candidate.commitment) === normalized
-    );
+    const existingIndex = this.findNoteIndexByCommitment(commitment);
     if (existingIndex < 0) {
       return false;
     }
@@ -253,6 +359,7 @@ export class FileBackedWalletState {
       this.state.commitments[params.merchantLeafIndex] = params.merchantCommitment;
       this.state.commitments[params.changeLeafIndex] = params.changeCommitment;
     }
+    this.rebuildCommitmentIndexes();
     await this.persist();
   }
 
@@ -289,6 +396,156 @@ export class FileBackedWalletState {
         this.state.lastSyncedBlock >= 0n ? this.state.lastSyncedBlock : undefined
       );
     }
+  }
+
+  private applyCommitmentWrites(writes: CommitmentWrite[]): void {
+    writes.sort((a, b) => {
+      if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+      if (a.logIndex !== b.logIndex) return a.logIndex < b.logIndex ? -1 : 1;
+      return a.order - b.order;
+    });
+
+    for (const write of writes) {
+      if (write.leafIndex < 0) continue;
+      this.state.commitments[write.leafIndex] = write.commitment;
+      const normalizedCommitment = normalizeHex(write.commitment);
+      this.leafIndexByCommitment.set(normalizedCommitment, write.leafIndex);
+      const noteIndexes = this.noteIndexesByCommitment.get(normalizedCommitment);
+      if (!noteIndexes) continue;
+      for (const noteIndex of noteIndexes) {
+        const note = this.state.notes[noteIndex];
+        if (!note) continue;
+        note.leafIndex = write.leafIndex;
+        if (note.depositBlock === undefined) {
+          note.depositBlock = write.blockNumber;
+        }
+      }
+    }
+  }
+
+  private rebuildCommitmentIndexes(): void {
+    this.noteIndexesByCommitment.clear();
+    for (let i = 0; i < this.state.notes.length; i += 1) {
+      const note = this.state.notes[i];
+      if (!note) continue;
+      const normalizedCommitment = normalizeHex(note.commitment);
+      const indexes = this.noteIndexesByCommitment.get(normalizedCommitment) ?? [];
+      indexes.push(i);
+      this.noteIndexesByCommitment.set(normalizedCommitment, indexes);
+    }
+
+    this.leafIndexByCommitment.clear();
+    for (let i = 0; i < this.state.commitments.length; i += 1) {
+      const commitment = this.state.commitments[i];
+      if (!commitment) continue;
+      this.leafIndexByCommitment.set(normalizeHex(commitment), i);
+    }
+  }
+
+  private mapRpcEventsToWrites(params: {
+    depositLogs: Array<{
+      blockNumber?: bigint;
+      logIndex?: number;
+      args: { commitment?: Hex; leafIndex?: bigint };
+    }>;
+    spendLogs: Array<{
+      blockNumber?: bigint;
+      logIndex?: number;
+      args: {
+        merchantCommitment?: Hex;
+        changeCommitment?: Hex;
+        merchantLeafIndex?: bigint;
+        changeLeafIndex?: bigint;
+      };
+    }>;
+  }): { writes: CommitmentWrite[]; depositsApplied: number; spendsApplied: number } {
+    const writes: CommitmentWrite[] = [];
+    let depositsApplied = 0;
+    let spendsApplied = 0;
+
+    for (const log of params.depositLogs) {
+      const args = log.args;
+      if (args.commitment === undefined || args.leafIndex === undefined) continue;
+      writes.push({
+        blockNumber: log.blockNumber ?? 0n,
+        logIndex: log.logIndex ?? 0,
+        order: 0,
+        leafIndex: Number(args.leafIndex),
+        commitment: args.commitment
+      });
+      depositsApplied += 1;
+    }
+
+    for (const log of params.spendLogs) {
+      const args = log.args;
+      if (
+        args.merchantCommitment === undefined ||
+        args.changeCommitment === undefined ||
+        args.merchantLeafIndex === undefined ||
+        args.changeLeafIndex === undefined
+      ) {
+        continue;
+      }
+      writes.push({
+        blockNumber: log.blockNumber ?? 0n,
+        logIndex: log.logIndex ?? 0,
+        order: 0,
+        leafIndex: Number(args.merchantLeafIndex),
+        commitment: args.merchantCommitment
+      });
+      writes.push({
+        blockNumber: log.blockNumber ?? 0n,
+        logIndex: log.logIndex ?? 0,
+        order: 1,
+        leafIndex: Number(args.changeLeafIndex),
+        commitment: args.changeCommitment
+      });
+      spendsApplied += 1;
+    }
+
+    return { writes, depositsApplied, spendsApplied };
+  }
+
+  private mapIndexerEventsToWrites(
+    deposits: IndexerDepositRow[],
+    spends: IndexerSpendRow[]
+  ): { writes: CommitmentWrite[]; depositsApplied: number; spendsApplied: number } {
+    const writes: CommitmentWrite[] = [];
+    let depositsApplied = 0;
+    let spendsApplied = 0;
+
+    for (const deposit of deposits) {
+      const { blockNumber, logIndex } = parseEventPositionFromId(deposit.id);
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 0,
+        leafIndex: Number(deposit.leafIndex),
+        commitment: deposit.commitment
+      });
+      depositsApplied += 1;
+    }
+
+    for (const spend of spends) {
+      const { blockNumber, logIndex } = parseEventPositionFromId(spend.id);
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 0,
+        leafIndex: Number(spend.merchantLeafIndex),
+        commitment: spend.merchantCommitment
+      });
+      writes.push({
+        blockNumber,
+        logIndex,
+        order: 1,
+        leafIndex: Number(spend.changeLeafIndex),
+        commitment: spend.changeCommitment
+      });
+      spendsApplied += 1;
+    }
+
+    return { writes, depositsApplied, spendsApplied };
   }
 
   async sync(): Promise<WalletSyncResult> {
@@ -340,72 +597,27 @@ export class FileBackedWalletState {
         })
       ]);
 
-      const writes: CommitmentWrite[] = [];
-      for (const log of depositLogs) {
-        const args = log.args as { commitment?: Hex; leafIndex?: bigint };
-        if (args.commitment === undefined || args.leafIndex === undefined) continue;
-        writes.push({
-          blockNumber: log.blockNumber ?? 0n,
-          logIndex: log.logIndex ?? 0,
-          order: 0,
-          leafIndex: Number(args.leafIndex),
-          commitment: args.commitment
-        });
-        depositsApplied += 1;
-      }
-
-      for (const log of spendLogs) {
-        const args = log.args as {
-          merchantCommitment?: Hex;
-          changeCommitment?: Hex;
-          merchantLeafIndex?: bigint;
-          changeLeafIndex?: bigint;
-        };
-        if (
-          args.merchantCommitment === undefined ||
-          args.changeCommitment === undefined ||
-          args.merchantLeafIndex === undefined ||
-          args.changeLeafIndex === undefined
-        ) {
-          continue;
-        }
-        writes.push({
-          blockNumber: log.blockNumber ?? 0n,
-          logIndex: log.logIndex ?? 0,
-          order: 0,
-          leafIndex: Number(args.merchantLeafIndex),
-          commitment: args.merchantCommitment
-        });
-        writes.push({
-          blockNumber: log.blockNumber ?? 0n,
-          logIndex: log.logIndex ?? 0,
-          order: 1,
-          leafIndex: Number(args.changeLeafIndex),
-          commitment: args.changeCommitment
-        });
-        spendsApplied += 1;
-      }
-
-      writes.sort((a, b) => {
-        if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
-        if (a.logIndex !== b.logIndex) return a.logIndex < b.logIndex ? -1 : 1;
-        return a.order - b.order;
+      const mapped = this.mapRpcEventsToWrites({
+        depositLogs: depositLogs as Array<{
+          blockNumber?: bigint;
+          logIndex?: number;
+          args: { commitment?: Hex; leafIndex?: bigint };
+        }>,
+        spendLogs: spendLogs as Array<{
+          blockNumber?: bigint;
+          logIndex?: number;
+          args: {
+            merchantCommitment?: Hex;
+            changeCommitment?: Hex;
+            merchantLeafIndex?: bigint;
+            changeLeafIndex?: bigint;
+          };
+        }>
       });
 
-      for (const write of writes) {
-        if (write.leafIndex < 0) continue;
-        this.state.commitments[write.leafIndex] = write.commitment;
-        const normalized = normalizeHex(write.commitment);
-        for (let i = 0; i < this.state.notes.length; i += 1) {
-          const note = this.state.notes[i];
-          if (!note) continue;
-          if (normalizeHex(note.commitment) !== normalized) continue;
-          note.leafIndex = write.leafIndex;
-          if (note.depositBlock === undefined) {
-            note.depositBlock = write.blockNumber;
-          }
-        }
-      }
+      this.applyCommitmentWrites(mapped.writes);
+      depositsApplied += mapped.depositsApplied;
+      spendsApplied += mapped.spendsApplied;
 
       this.state.lastSyncedBlock = toBlock;
       await this.persist();
@@ -423,62 +635,8 @@ export class FileBackedWalletState {
   private async syncFromIndexer(): Promise<WalletSyncResult> {
     const fromBlock = this.state.lastSyncedBlock + 1n;
     const { deposits, spends, maxBlockNumber } = await this.fetchIndexerEvents();
-
-    const writes: CommitmentWrite[] = [];
-    let depositsApplied = 0;
-    let spendsApplied = 0;
-
-    for (const deposit of deposits) {
-      const { blockNumber, logIndex } = parseEventPositionFromId(deposit.id);
-      writes.push({
-        blockNumber,
-        logIndex,
-        order: 0,
-        leafIndex: Number(deposit.leafIndex),
-        commitment: deposit.commitment
-      });
-      depositsApplied += 1;
-    }
-
-    for (const spend of spends) {
-      const { blockNumber, logIndex } = parseEventPositionFromId(spend.id);
-      writes.push({
-        blockNumber,
-        logIndex,
-        order: 0,
-        leafIndex: Number(spend.merchantLeafIndex),
-        commitment: spend.merchantCommitment
-      });
-      writes.push({
-        blockNumber,
-        logIndex,
-        order: 1,
-        leafIndex: Number(spend.changeLeafIndex),
-        commitment: spend.changeCommitment
-      });
-      spendsApplied += 1;
-    }
-
-    writes.sort((a, b) => {
-      if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
-      if (a.logIndex !== b.logIndex) return a.logIndex < b.logIndex ? -1 : 1;
-      return a.order - b.order;
-    });
-
-    for (const write of writes) {
-      if (write.leafIndex < 0) continue;
-      this.state.commitments[write.leafIndex] = write.commitment;
-      const normalized = normalizeHex(write.commitment);
-      for (let i = 0; i < this.state.notes.length; i += 1) {
-        const note = this.state.notes[i];
-        if (!note) continue;
-        if (normalizeHex(note.commitment) !== normalized) continue;
-        note.leafIndex = write.leafIndex;
-        if (note.depositBlock === undefined) {
-          note.depositBlock = write.blockNumber;
-        }
-      }
-    }
+    const mapped = this.mapIndexerEventsToWrites(deposits, spends);
+    this.applyCommitmentWrites(mapped.writes);
 
     const targetBlock = maxBlockNumber >= this.state.lastSyncedBlock ? maxBlockNumber : this.state.lastSyncedBlock;
     this.state.lastSyncedBlock = targetBlock;
@@ -487,91 +645,80 @@ export class FileBackedWalletState {
     return {
       fromBlock,
       toBlock: targetBlock,
-      depositsApplied,
-      spendsApplied
+      depositsApplied: mapped.depositsApplied,
+      spendsApplied: mapped.spendsApplied
     };
   }
 
   private async fetchIndexerEvents(): Promise<{
-    deposits: Array<{ id: string; commitment: Hex; leafIndex: string }>;
-    spends: Array<{
-      id: string;
-      merchantCommitment: Hex;
-      changeCommitment: Hex;
-      merchantLeafIndex: string;
-      changeLeafIndex: string;
-    }>;
+    deposits: IndexerDepositRow[];
+    spends: IndexerSpendRow[];
     maxBlockNumber: bigint;
   }> {
+    const { deposits, spends } = await this.fetchIndexerRows();
+    return {
+      deposits,
+      spends,
+      maxBlockNumber: this.computeIndexerMaxBlock(deposits, spends)
+    };
+  }
+
+  private async indexerPost<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
     if (!this.indexerGraphqlUrl) {
       throw new Error('indexerGraphqlUrl is not configured');
     }
-    const endpoint = this.indexerGraphqlUrl;
-    const post = async <T>(query: string, variables?: Record<string, unknown>): Promise<T> => {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          query,
-          ...(variables ? { variables } : {})
-        })
-      });
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`indexer graphql request failed: ${response.status} ${text}`);
-      }
-      const payload = (await response.json()) as { data?: T; errors?: Array<{ message?: string }> };
-      if (payload.errors && payload.errors.length > 0) {
-        const message = payload.errors.map((error) => error.message ?? 'unknown error').join('; ');
-        throw new Error(`indexer graphql error: ${message}`);
-      }
-      if (!payload.data) {
-        throw new Error('indexer graphql response missing data');
-      }
-      return payload.data;
-    };
+    const payload = await postJson<{ data?: T; errors?: Array<{ message?: string }> }>(
+      fetch,
+      this.indexerGraphqlUrl,
+      {
+        query,
+        ...(variables ? { variables } : {})
+      },
+      { errorPrefix: 'indexer graphql request failed' }
+    );
+    if (payload.errors && payload.errors.length > 0) {
+      const message = payload.errors.map((error) => error.message ?? 'unknown error').join('; ');
+      throw new Error(`indexer graphql error: ${message}`);
+    }
+    if (!payload.data) {
+      throw new Error('indexer graphql response missing data');
+    }
+    return payload.data;
+  }
 
-    if (!this.indexerFieldNames) {
-      const introspection = await post<{
-        __schema: { queryType: { fields: Array<{ name: string }> } };
-      }>(`query WalletIndexerFields { __schema { queryType { fields { name } } } }`);
-
-      const fieldNames = introspection.__schema.queryType.fields.map((field) => field.name);
-      const pickField = (needle: string): string | undefined =>
-        fieldNames.find(
-          (name) =>
-            name.toLowerCase().includes(needle) &&
-            !name.toLowerCase().includes('aggregate') &&
-            !name.toLowerCase().includes('by_pk')
-        );
-
-      const deposits = pickField('shieldedpool_deposited');
-      const spends = pickField('shieldedpool_spent');
-
-      if (!deposits || !spends) {
-        throw new Error(
-          `unable to detect Envio fields for deposits/spends at ${endpoint}; available fields: ${fieldNames.join(', ')}`
-        );
-      }
-
-      this.indexerFieldNames = { deposits, spends };
+  private async ensureIndexerFieldNames(): Promise<{ deposits: string; spends: string }> {
+    if (this.indexerFieldNames) {
+      return this.indexerFieldNames;
     }
 
-    const depositsField = this.indexerFieldNames.deposits;
-    const spendsField = this.indexerFieldNames.spends;
+    const introspection = await this.indexerPost<{
+      __schema: { queryType: { fields: Array<{ name: string }> } };
+    }>(`query WalletIndexerFields { __schema { queryType { fields { name } } } }`);
 
-    type DepositsQuery = {
-      deposits: Array<{ id: string; commitment: Hex; leafIndex: string }>;
-      spends: Array<{
-        id: string;
-        merchantCommitment: Hex;
-        changeCommitment: Hex;
-        merchantLeafIndex: string;
-        changeLeafIndex: string;
-      }>;
-    };
+    const fieldNames = introspection.__schema.queryType.fields.map((field) => field.name);
+    const pickField = (needle: string): string | undefined =>
+      fieldNames.find(
+        (name) =>
+          name.toLowerCase().includes(needle) &&
+          !name.toLowerCase().includes('aggregate') &&
+          !name.toLowerCase().includes('by_pk')
+      );
+
+    const deposits = pickField('shieldedpool_deposited');
+    const spends = pickField('shieldedpool_spent');
+
+    if (!deposits || !spends) {
+      throw new Error(
+        `unable to detect Envio fields for deposits/spends at ${this.indexerGraphqlUrl}; available fields: ${fieldNames.join(', ')}`
+      );
+    }
+
+    this.indexerFieldNames = { deposits, spends };
+    return this.indexerFieldNames;
+  }
+
+  private async fetchIndexerRows(): Promise<IndexerEventsRows> {
+    const { deposits: depositsField, spends: spendsField } = await this.ensureIndexerFieldNames();
 
     const withPaginationQuery = `
       query WalletIndexerData($limit: Int!, $offset: Int!) {
@@ -607,27 +754,33 @@ export class FileBackedWalletState {
       }
     `;
 
-    let deposits: DepositsQuery['deposits'] = [];
-    let spends: DepositsQuery['spends'] = [];
+    let deposits: IndexerDepositRow[] = [];
+    let spends: IndexerSpendRow[] = [];
 
     try {
-      const pageSize = 500;
       let offset = 0;
       while (true) {
-        const page = await post<DepositsQuery>(withPaginationQuery, { limit: pageSize, offset });
+        const page = await this.indexerPost<IndexerEventsRows>(withPaginationQuery, {
+          limit: INDEXER_PAGE_SIZE,
+          offset
+        });
         deposits = deposits.concat(page.deposits);
         spends = spends.concat(page.spends);
-        if (page.deposits.length < pageSize && page.spends.length < pageSize) {
+        if (page.deposits.length < INDEXER_PAGE_SIZE && page.spends.length < INDEXER_PAGE_SIZE) {
           break;
         }
-        offset += pageSize;
+        offset += INDEXER_PAGE_SIZE;
       }
     } catch {
-      const data = await post<DepositsQuery>(fullQuery);
+      const data = await this.indexerPost<IndexerEventsRows>(fullQuery);
       deposits = data.deposits;
       spends = data.spends;
     }
 
+    return { deposits, spends };
+  }
+
+  private computeIndexerMaxBlock(deposits: IndexerDepositRow[], spends: IndexerSpendRow[]): bigint {
     let maxBlockNumber = this.state.lastSyncedBlock;
     for (const deposit of deposits) {
       const position = parseEventPositionFromId(deposit.id);
@@ -641,13 +794,12 @@ export class FileBackedWalletState {
         maxBlockNumber = position.blockNumber;
       }
     }
-
-    return { deposits, spends, maxBlockNumber };
+    return maxBlockNumber;
   }
 
   getSpendContextByCommitment(commitment: Hex): ShieldedSpendContext {
-    const normalized = normalizeHex(commitment);
-    const note = this.state.notes.find((candidate) => normalizeHex(candidate.commitment) === normalized);
+    const noteIndex = this.findNoteIndexByCommitment(commitment);
+    const note = noteIndex >= 0 ? this.state.notes[noteIndex] : undefined;
     if (!note) {
       throw new Error(
         `note not found in wallet state for commitment ${commitment}; add note secrets first with addOrUpdateNote()`
@@ -677,14 +829,16 @@ export class FileBackedWalletState {
     };
   }
 
+  private findNoteIndexByCommitment(commitment: Hex): number {
+    const normalized = normalizeHex(commitment);
+    const noteIndexes = this.noteIndexesByCommitment.get(normalized);
+    if (!noteIndexes || noteIndexes.length === 0) return -1;
+    return noteIndexes[0] ?? -1;
+  }
+
   private findLeafIndex(commitment: Hex): number {
     const normalized = normalizeHex(commitment);
-    for (let i = this.state.commitments.length - 1; i >= 0; i -= 1) {
-      const candidate = this.state.commitments[i];
-      if (!candidate) continue;
-      if (normalizeHex(candidate) === normalized) return i;
-    }
-    return -1;
+    return this.leafIndexByCommitment.get(normalized) ?? -1;
   }
 }
 

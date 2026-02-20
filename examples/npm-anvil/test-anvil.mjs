@@ -2,9 +2,9 @@ import {
   ShieldedClientSDK,
   buildWitnessFromCommitments,
   createNoirJsProofProviderFromDefaultCircuit,
-  createShieldedFetch,
   deriveCommitment,
 } from "@shielded-x402/client";
+import { X402_HEADERS, parsePaymentRequiredHeader } from "@shielded-x402/shared-types";
 import { privateKeyToAccount } from "viem/accounts";
 
 const toWord = (n) => `0x${BigInt(n).toString(16).padStart(64, "0")}`;
@@ -39,30 +39,36 @@ const sdk = new ShieldedClientSDK({
   proofProvider,
 });
 
-console.log("[4/5] Creating shielded fetch wrapper");
-const shieldedFetch = createShieldedFetch({
-  sdk,
-  prefetchRequirement: usePrefetch
-    ? async () => {
-        const requirementRes = await fetch(`${gateway}/x402/requirement`, { method: "GET" });
-        if (!requirementRes.ok) return null;
-        const parsed = await requirementRes.json();
-        return parsed.requirement ?? null;
-      }
-    : undefined,
-  resolveContext: async () => ({
-    note,
-    witness,
-    nullifierSecret: toWord(9),
-  }),
-});
-
-console.log(`[5/5] Requesting paid endpoint via ${gateway}/paid/data`);
+console.log("[4/5] Preparing payment context");
+let requirement;
 if (usePrefetch) {
   console.log("Prefetch mode enabled: proof is prepared before the paid request");
+  const requirementRes = await fetch(`${gateway}/x402/requirement`, { method: "GET" });
+  if (!requirementRes.ok) {
+    throw new Error(`prefetch failed: ${requirementRes.status}`);
+  }
+  const parsed = await requirementRes.json();
+  requirement = parsed.requirement ?? null;
 }
+
+console.log(`[5/5] Requesting paid endpoint via ${gateway}/paid/data`);
+const first = await fetch(`${gateway}/paid/data`, { method: "GET" });
+if (first.status !== 402) {
+  throw new Error(`expected 402, got ${first.status}`);
+}
+if (!requirement) {
+  const header = first.headers.get(X402_HEADERS.paymentRequired);
+  if (!header) {
+    throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
+  }
+  requirement = parsePaymentRequiredHeader(header);
+}
+const prepared = await sdk.prepare402Payment(requirement, note, witness, toWord(9));
 console.time("shieldedFetch");
-const res = await shieldedFetch(`${gateway}/paid/data`, { method: "GET" });
+const res = await fetch(`${gateway}/paid/data`, {
+  method: "GET",
+  headers: prepared.headers
+});
 console.timeEnd("shieldedFetch");
 const body = await res.text();
 

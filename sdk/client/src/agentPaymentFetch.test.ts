@@ -1,6 +1,5 @@
 import type { Erc8004DirectoryClient } from '@shielded-x402/erc8004-adapter';
 import { describe, expect, it, vi } from 'vitest';
-import { ShieldedClientSDK } from './client.js';
 import {
   AgentPaymentError,
   type A2AResolvedCard,
@@ -8,11 +7,17 @@ import {
   type AgentTarget
 } from './agentPaymentFetch.js';
 
-function makeSdk(): ShieldedClientSDK {
-  return new ShieldedClientSDK({
-    endpoint: 'http://relayer.local',
-    signer: async () => '0xsig'
-  });
+function makeCreditClient() {
+  return {
+    pay: vi.fn(async () => ({
+      status: 'DONE' as const,
+      merchantResult: {
+        status: 200,
+        headers: {},
+        bodyBase64: Buffer.from('ok', 'utf8').toString('base64')
+      }
+    }))
+  };
 }
 
 function asFetch(mock: ReturnType<typeof vi.fn>): typeof fetch {
@@ -31,21 +36,21 @@ function makeDirectoryClient(
 describe('createAgentPaymentFetch', () => {
   it('uses direct URL target without directory client', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const creditClient = makeCreditClient();
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run on 200 response');
-      },
+      creditClient,
       fetchImpl: asFetch(fetchMock)
     });
 
     const response = await agentFetch({ type: 'url', url: 'https://api.example.com/data' });
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledWith('https://api.example.com/data', {});
+    expect(creditClient.pay).not.toHaveBeenCalled();
   });
 
   it('resolves erc8004 target and selects endpoint by policy', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const creditClient = makeCreditClient();
     const directoryClient = makeDirectoryClient(async () => ({
       chainId: 84532,
       tokenId: '1434',
@@ -61,12 +66,9 @@ describe('createAgentPaymentFetch', () => {
     }));
 
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
       targetPolicy: { preferredProtocols: ['a2a', 'web'] },
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run on 200 response');
-      },
       fetchImpl: asFetch(fetchMock)
     });
 
@@ -79,12 +81,10 @@ describe('createAgentPaymentFetch', () => {
     const directoryClient = makeDirectoryClient(async () => {
       throw new Error('directory unavailable');
     });
+    const creditClient = makeCreditClient();
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run');
-      },
       fetchImpl: asFetch(vi.fn().mockResolvedValue(new Response('ok', { status: 200 })))
     });
 
@@ -107,12 +107,10 @@ describe('createAgentPaymentFetch', () => {
       }
     }));
 
+    const creditClient = makeCreditClient();
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run');
-      },
       fetchImpl: asFetch(vi.fn().mockResolvedValue(new Response('ok', { status: 200 })))
     });
 
@@ -149,6 +147,7 @@ describe('createAgentPaymentFetch', () => {
       )
       .mockResolvedValueOnce(new Response('ok', { status: 200 }));
 
+    const creditClient = makeCreditClient();
     const onA2ACardResolved = vi.fn(async (_args: {
       card: A2AResolvedCard;
     }) => {});
@@ -166,12 +165,9 @@ describe('createAgentPaymentFetch', () => {
     }));
 
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
       onA2ACardResolved,
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run on 200 response');
-      },
       fetchImpl: asFetch(fetchMock)
     });
 
@@ -196,6 +192,7 @@ describe('createAgentPaymentFetch', () => {
       )
       .mockResolvedValueOnce(new Response('paid', { status: 200 }));
 
+    const creditClient = makeCreditClient();
     const directoryClient = makeDirectoryClient(async () => ({
       chainId: 84532,
       tokenId: '813',
@@ -210,12 +207,9 @@ describe('createAgentPaymentFetch', () => {
     }));
 
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
       resolveA2AInvokeTarget: async () => 'https://api.answerbook.app/invoke/ask',
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run on 200 response');
-      },
       fetchImpl: asFetch(fetchMock)
     });
 
@@ -241,6 +235,7 @@ describe('createAgentPaymentFetch', () => {
         )
       );
 
+    const creditClient = makeCreditClient();
     const directoryClient = makeDirectoryClient(async () => ({
       chainId: 84532,
       tokenId: '813',
@@ -255,13 +250,10 @@ describe('createAgentPaymentFetch', () => {
     }));
 
     const agentFetch = createAgentPaymentFetch({
-      sdk: makeSdk(),
+      creditClient,
       directoryClient,
       resolveA2AInvokeTarget: async () => {
         throw new Error('no payable invoke endpoint');
-      },
-      resolveContext: async () => {
-        throw new Error('resolveContext should not run');
       },
       fetchImpl: asFetch(fetchMock)
     });

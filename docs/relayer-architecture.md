@@ -1,78 +1,68 @@
-# Payment Relayer Architecture (No Merchant Change)
+# Payment Relayer Architecture
 
 ## Goal
 
-Keep merchants on existing x402 behavior while allowing agents to pay privately:
+Provide a fast credit payment lane for x402 requests:
 
-1. agent proves locally
-2. relayer verifies + settles onchain
-3. relayer executes merchant payout adapter
+1. proof-backed topup
+2. signature-only debit per paid call
+3. optional onchain close/challenge/finalize settlement
 
-Relayer policy boundary:
+## Relayer Responsibilities
 
-- relayer verifies cryptographic and protocol correctness only
-- relayer does not decide trust/reputation policy for counterparties
-- endpoint discovery and trust-based routing are client-SDK concerns
+- verify topup payload validity (shape, nullifier/proof checks, settlement)
+- verify debit intent validity (state signatures, seq, balance, deadline, hash binding)
+- execute payout adapter call
+- sign and return next channel state
 
-## Request lifecycle
+## Request Lifecycle
 
-1. `RECEIVED`: relayer accepts `POST /v1/relay/pay`.
-2. `VERIFIED`: relayer refetches merchant requirement and validates proof/challenge bindings.
-3. `SENT_ONCHAIN`: relayer submits `ShieldedPool.submitSpend`.
-4. `CONFIRMED`: settlement tx is confirmed.
-5. `PAID_MERCHANT`: payout adapter call succeeds.
-6. `DONE`: final state returned to agent.
+1. `POST /v1/relay/credit/topup`
+2. relayer settles topup and returns next signed state
+3. `POST /v1/relay/credit/pay`
+4. relayer validates + pays merchant + returns next signed state
 
-Terminal failure state: `FAILED`.
+## Safety Controls
 
-## Lifecycle diagram
+- strict sequencing: `nextSeq = currentSeq + 1`
+- per-channel lock for concurrent requests
+- state-head compare-and-swap to reject stale state
+- persisted head store (`RELAYER_CREDIT_HEAD_STORE_PATH`)
+- idempotency via `requestId`
 
-```mermaid
-stateDiagram-v2
-  [*] --> RECEIVED
-  RECEIVED --> VERIFIED: challenge + proof checks pass
-  RECEIVED --> FAILED: invalid request
-  VERIFIED --> SENT_ONCHAIN: submitSpend tx sent
-  VERIFIED --> FAILED: nullifier/proof mismatch
-  SENT_ONCHAIN --> CONFIRMED: receipt success
-  SENT_ONCHAIN --> FAILED: tx reverted
-  CONFIRMED --> PAID_MERCHANT: payout adapter success
-  CONFIRMED --> FAILED: payout adapter failure
-  PAID_MERCHANT --> DONE
-  DONE --> [*]
-  FAILED --> [*]
-```
+## Payout Modes
 
-## Safeguards implemented
+- `forward`: plain forwarding with optional static headers
+- `noop`: local/dev success stub
+- `x402`: relayer pays upstream x402 endpoints via `x402-fetch`
 
-1. Challenge binding: relayer recomputes `challengeHash` from `(domain, nonce, amount, verifyingContract)` and compares against payload/public inputs.
-2. Recipient binding: `verifyingContract` from challenge is part of hash binding.
-3. Nullifier replay defense: relayer checks `isNullifierUsed`; pool enforces one-time nullifier onchain.
-4. Root validity: relayer proof verifier checks known root + verifier contract validity.
-5. Idempotency: deterministic key from request fields and payload; duplicate requests return existing settlement record.
-6. Durable state: settlement records persisted to file store (`RELAYER_STORE_PATH`) with explicit state transitions.
-7. Payout-after-confirm only: payout adapter runs only after successful onchain confirmation.
-8. Auditability: status endpoint exposes settlement ID, tx hash, failure reason, merchant result metadata.
+## Environment Highlights
 
-## Payout adapters
-
-- `forward` mode: forwards merchant request with static configured headers (`RELAYER_PAYOUT_HEADERS_JSON`).
-- `noop` mode: local/dev mode that simulates merchant payout success.
-- `webhook` adapter helper exists for integrating external payment processors.
-
-## Environment
-
-- `RELAYER_PORT`
-- `RELAYER_RPC_URL` (or `SEPOLIA_RPC_URL` fallback)
+- `RELAYER_RPC_URL` / `SEPOLIA_RPC_URL`
 - `SHIELDED_POOL_ADDRESS`
-- `ULTRA_VERIFIER_ADDRESS`
-- `RELAYER_PRIVATE_KEY` (or `PAYMENT_RELAYER_PRIVATE_KEY` fallback)
-- `RELAYER_STORE_PATH`
-- `RELAYER_PAYOUT_MODE=forward|noop`
+- `RELAYER_PRIVATE_KEY`
+- `RELAYER_CHAIN_ID`
+- `RELAYER_PAYOUT_MODE=forward|noop|x402`
 - `RELAYER_PAYOUT_HEADERS_JSON`
+- `RELAYER_X402_RPC_URL`
+- `RELAYER_X402_PRIVATE_KEY`
+- `RELAYER_X402_CHAIN=base-sepolia|sepolia`
+- `RELAYER_CREDIT_HEAD_STORE_PATH`
+- `CREDIT_SETTLEMENT_CONTRACT`
+- `CREDIT_SETTLEMENT_RPC_URL`
 
 ## Endpoints
 
 - `GET /health`
-- `POST /v1/relay/pay`
-- `GET /v1/relay/status/:settlementId`
+- `POST /v1/relay/credit/domain`
+- `POST /v1/relay/credit/topup`
+- `POST /v1/relay/credit/pay`
+- `POST /v1/relay/credit/close/start`
+- `POST /v1/relay/credit/close/challenge`
+- `POST /v1/relay/credit/close/finalize`
+- `GET /v1/relay/credit/close/:channelId`
+
+## Operational Constraints
+
+- lock implementation is process-local (single instance unless you add distributed locking)
+- idempotency caches are in-memory (best-effort across restarts)

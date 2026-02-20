@@ -104,4 +104,53 @@ describe('FileBackedWalletState', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('persists, reloads, and clears credit channel state', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wallet-state-test-'));
+    try {
+      const filePath = join(dir, 'wallet-state.json');
+      const pool = '0x0000000000000000000000000000000000000003' as Hex;
+      const channelId =
+        '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as Hex;
+      const signedState = {
+        state: {
+          channelId,
+          seq: '3',
+          available: '70',
+          cumulativeSpent: '30',
+          lastDebitDigest:
+            '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as Hex,
+          updatedAt: '1700000000',
+          agentAddress: '0x0000000000000000000000000000000000000001' as Hex,
+          relayerAddress: '0x0000000000000000000000000000000000000002' as Hex
+        },
+        agentSignature:
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1b' as Hex,
+        relayerSignature:
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1b' as Hex
+      };
+
+      const state = await FileBackedWalletState.create({
+        filePath,
+        shieldedPoolAddress: pool,
+        startBlock: 0n
+      });
+      await state.setCreditState(signedState);
+
+      const reloaded = await FileBackedWalletState.create({
+        filePath,
+        shieldedPoolAddress: pool,
+        startBlock: 0n
+      });
+      const loaded = reloaded.getCreditState(channelId);
+      expect(loaded?.state.seq).toBe('3');
+      expect(loaded?.state.available).toBe('70');
+
+      await reloaded.clearCreditState(channelId);
+      const cleared = reloaded.getCreditState(channelId);
+      expect(cleared).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

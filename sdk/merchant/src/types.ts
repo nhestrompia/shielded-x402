@@ -6,12 +6,10 @@ export interface MerchantConfig {
   network?: string;
   asset?: Hex;
   payTo?: Hex;
-  merchantSignerAddress?: Hex;
   merchantPubKey: Hex;
   verifyingContract: Hex;
   challengeTtlMs: number;
   fixedChallengeNonce?: Hex;
-  withdrawalTtlSec?: number;
   now?: () => number;
 }
 
@@ -25,7 +23,6 @@ export interface VerifyResult {
 export interface MerchantHooks {
   verifyProof: (payload: ShieldedPaymentResponse) => Promise<boolean>;
   isNullifierUsed: (nullifier: Hex) => Promise<boolean>;
-  signWithdrawalDigest?: (digest: Hex) => Promise<Hex>;
 }
 
 export interface SettlementRecord {
@@ -36,21 +33,16 @@ export interface SettlementRecord {
 }
 
 export interface WithdrawRequest {
-  encryptedNote: Hex;
+  nullifier: Hex;
+  challengeNonce: Hex;
   recipient: Hex;
-  amount?: bigint;
-  claimId?: Hex;
-  deadline?: number;
 }
 
 export interface WithdrawResult {
-  claimId: Hex;
-  merchant: Hex;
-  amount: bigint;
-  deadline: bigint;
-  signature: Hex;
-  digest: Hex;
-  encodedAuth: Hex;
+  nullifier: Hex;
+  challengeNonce: Hex;
+  recipient: Hex;
+  encodedCallData: Hex;
 }
 
 export interface ChallengeIssue {

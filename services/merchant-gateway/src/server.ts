@@ -1,6 +1,6 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { ShieldedMerchantSDK, createLocalWithdrawalSigner } from '@shielded-x402/merchant';
+import { ShieldedMerchantSDK } from '@shielded-x402/merchant';
 import { X402_HEADERS } from '@shielded-x402/shared-types';
 import type { Erc8004AdapterConfig } from '@shielded-x402/erc8004-adapter';
 import type { MerchantConfig, MerchantHooks, WithdrawRequest } from '@shielded-x402/merchant';
@@ -14,9 +14,6 @@ const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` |
 const ultraVerifierAddress = process.env.ULTRA_VERIFIER_ADDRESS as `0x${string}` | undefined;
 const paymentVerifyingContract = process.env.PAYMENT_VERIFYING_CONTRACT as `0x${string}` | undefined;
 const paymentRelayerPrivateKey = process.env.PAYMENT_RELAYER_PRIVATE_KEY as `0x${string}` | undefined;
-const merchantWithdrawPrivateKey = process.env.MERCHANT_WITHDRAW_PRIVATE_KEY as
-  | `0x${string}`
-  | undefined;
 const registryUrl = process.env.ERC8004_REGISTRY_URL;
 const fixedChallengeNonce = process.env.FIXED_CHALLENGE_NONCE as `0x${string}` | undefined;
 
@@ -45,10 +42,6 @@ const settlement =
       })
     : createNoopSettlement();
 
-const withdrawalSigner = merchantWithdrawPrivateKey
-  ? createLocalWithdrawalSigner(merchantWithdrawPrivateKey)
-  : undefined;
-
 const merchantConfig: MerchantConfig = {
   rail: 'shielded-usdc',
   price: BigInt(process.env.PRICE_USDC_MICROS ?? '1000000'),
@@ -61,9 +54,6 @@ const merchantConfig: MerchantConfig = {
     '0x2222222222222222222222222222222222222222',
   challengeTtlMs: Number(process.env.CHALLENGE_TTL_MS ?? '180000')
 };
-if (withdrawalSigner) {
-  merchantConfig.merchantSignerAddress = withdrawalSigner.address;
-}
 if (fixedChallengeNonce) {
   merchantConfig.fixedChallengeNonce = fixedChallengeNonce;
 }
@@ -72,9 +62,6 @@ const merchantHooks: MerchantHooks = {
   verifyProof: verifier.verifyProof,
   isNullifierUsed: verifier.isNullifierUsed
 };
-if (withdrawalSigner) {
-  merchantHooks.signWithdrawalDigest = withdrawalSigner.signDigest;
-}
 
 const sdk = new ShieldedMerchantSDK(merchantConfig, merchantHooks);
 
@@ -86,8 +73,7 @@ app.get('/health', (_req, res) => {
     ok: true,
     erc8004Enabled,
     onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && ultraVerifierAddress),
-    onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey),
-    withdrawalSignerEnabled: Boolean(withdrawalSigner)
+    onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey)
   });
 });
 
@@ -142,24 +128,12 @@ app.get('/paid/data', createShieldedPaymentMiddleware({ sdk, verifier, settlemen
 });
 
 app.post('/merchant/withdraw/sign', async (req, res) => {
-  if (!withdrawalSigner) {
-    res.status(501).json({ error: 'withdrawal signer not configured' });
-    return;
-  }
   try {
     const withdrawRequest: WithdrawRequest = {
-      encryptedNote: req.body.encryptedNote,
+      nullifier: req.body.nullifier,
+      challengeNonce: req.body.challengeNonce,
       recipient: req.body.recipient
     };
-    if (req.body.amount) {
-      withdrawRequest.amount = BigInt(req.body.amount);
-    }
-    if (req.body.claimId) {
-      withdrawRequest.claimId = req.body.claimId;
-    }
-    if (req.body.deadline) {
-      withdrawRequest.deadline = Number(req.body.deadline);
-    }
     const payload = await sdk.decryptAndWithdraw(withdrawRequest);
     res.json(payload);
   } catch (error) {

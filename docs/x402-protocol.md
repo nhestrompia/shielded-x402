@@ -1,10 +1,13 @@
-# x402 Wire Contract (Shielded Rail)
+# x402 Wire Contract (Current)
 
-This repo now uses strict x402 v2-style framing:
+This repository uses x402 framing for merchant challenges plus credit-relay settlement.
 
-- `PAYMENT-REQUIRED` on `402` responses (base64 JSON envelope)
-- `PAYMENT-SIGNATURE` on retry requests (base64 JSON envelope)
-- `PAYMENT-RESPONSE` is reserved for response settlement metadata
+## Merchant Challenge Headers
+
+- `PAYMENT-REQUIRED` on `402` response (base64 JSON envelope)
+- `PAYMENT-SIGNATURE` for signed payment payload envelopes (used when constructing proof-backed payloads)
+
+Header constants live in `@shielded-x402/shared-types` (`X402_HEADERS`).
 
 ## `PAYMENT-REQUIRED` envelope
 
@@ -15,85 +18,92 @@ This repo now uses strict x402 v2-style framing:
     {
       "x402Version": 2,
       "scheme": "exact",
-      "network": "eip155:11155111",
+      "network": "eip155:84532",
       "asset": "0x...",
       "payTo": "0x...",
       "rail": "shielded-usdc",
-      "amount": "1000000",
+      "amount": "10000",
       "challengeNonce": "0x...",
-      "challengeExpiry": "<unix-ms>",
+      "challengeExpiry": "1735689600",
       "merchantPubKey": "0x...",
-      "verifyingContract": "0x...",
-      "extra": {
-        "rail": "shielded-usdc",
-        "challengeNonce": "0x...",
-        "challengeExpiry": "<unix-ms>",
-        "merchantPubKey": "0x...",
-        "verifyingContract": "0x..."
-      }
+      "verifyingContract": "0x..."
     }
   ]
 }
 ```
 
-## `PAYMENT-SIGNATURE` envelope
+## Credit Relay Requests
+
+### Topup
+
+`POST /v1/relay/credit/topup`
 
 ```json
 {
-  "x402Version": 2,
-  "accepted": { "...": "selected accepted requirement" },
-  "challengeNonce": "0x...",
-  "signature": "0x...",
-  "payload": {
-    "proof": "0x...",
-    "publicInputs": ["0x...", "0x...", "0x...", "0x...", "0x...", "0x..."],
-    "nullifier": "0x...",
-    "root": "0x...",
-    "merchantCommitment": "0x...",
-    "changeCommitment": "0x...",
-    "challengeHash": "0x...",
-    "encryptedReceipt": "0x...",
-    "txHint": "leaf:<index>"
-  }
+  "channelId": "0x...",
+  "requestId": "credit-topup-...",
+  "paymentPayload": { "proof": "0x...", "publicInputs": ["0x..."], "...": "..." },
+  "paymentPayloadSignature": "0x...",
+  "latestState": { "state": { "...": "..." }, "agentSignature": "0x...", "relayerSignature": "0x..." }
 }
 ```
 
-## End-to-End Flow (Shielded Rail)
+### Debit
+
+`POST /v1/relay/credit/pay`
+
+```json
+{
+  "requestId": "credit-...",
+  "merchantRequest": {
+    "url": "https://merchant.example/paid",
+    "method": "GET",
+    "headers": { "accept": "application/json" }
+  },
+  "requirement": { "...": "normalized requirement" },
+  "latestState": { "state": { "...": "..." }, "agentSignature": "0x...", "relayerSignature": "0x..." },
+  "debitIntent": {
+    "channelId": "0x...",
+    "prevStateHash": "0x...",
+    "nextSeq": "6",
+    "amount": "10000",
+    "merchantRequestHash": "0x...",
+    "deadline": "1735689700",
+    "requestId": "credit-..."
+  },
+  "debitIntentSignature": "0x..."
+}
+```
+
+## Flow Diagram
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as Agent (Client SDK)
-    participant M as Merchant API (x402)
+    participant A as Agent SDK
+    participant M as Merchant API
     participant R as Payment Relayer
-    participant P as ShieldedPool + Verifier
+    participant P as ShieldedPool
 
-    A->>M: Request protected endpoint
+    A->>M: Request paid endpoint
     M-->>A: 402 + PAYMENT-REQUIRED
-    A->>A: Build proof and sign PAYMENT-SIGNATURE
-    A->>R: POST /v1/relay/pay
-    R->>M: Refetch requirement and validate challenge
-    M-->>R: PAYMENT-REQUIRED
-    R->>R: Verify proof, nullifier, and bindings
-    R->>P: submitSpend(...)
-    P-->>R: tx confirmed
-    R->>M: Forward original merchant request
-    M-->>R: Paid merchant response bytes
-    R-->>A: Same status, headers, and body
+
+    alt no channel state / insufficient credit
+      A->>A: Build proof-backed payload
+      A->>R: POST /v1/relay/credit/topup
+      R->>P: settle topup onchain
+      R-->>A: next signed credit state
+    end
+
+    A->>R: POST /v1/relay/credit/pay
+    R->>R: verify latestState + debit intent
+    R->>M: execute payout adapter request
+    M-->>R: merchant response
+    R-->>A: merchant response + next signed state
 ```
 
-## Relayer Bridge Endpoint
+## Notes
 
-For existing non-shielded x402 merchants, client relayed mode uses:
-
-- `POST /v1/relay/challenge`
-
-Request:
-
-- merchant request metadata + original merchant `PAYMENT-REQUIRED` header
-
-Response:
-
-- shielded `PaymentRequirement` (`rail=shielded-usdc`) and corresponding `PAYMENT-REQUIRED` header
-
-This lets agents pay standard x402 merchants through shielded settlement without merchant-side code changes.
+- Credit lane is sequential per channel (`nextSeq = currentSeq + 1`).
+- `requestId` is mandatory for idempotency.
+- Replay protection is enforced through state hash, seq, deadline, and canonical merchant request hash.

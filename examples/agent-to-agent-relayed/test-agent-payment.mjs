@@ -1,8 +1,9 @@
 import {
+  createCreditChannelClient,
+  createCreditShieldedFetch,
+  createNoirJsProofProviderFromDefaultCircuit,
   FileBackedWalletState,
   ShieldedClientSDK,
-  createAgentPaymentFetch,
-  createNoirJsProofProviderFromDefaultCircuit,
 } from "@shielded-x402/client";
 import {
   createEnvioGraphqlProvider,
@@ -11,17 +12,15 @@ import {
   createScanApiProvider,
 } from "@shielded-x402/erc8004-adapter";
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 
 const env = process.env;
 const relayerEndpoint = env.RELAYER_ENDPOINT ?? "http://127.0.0.1:3100";
-const payerPrivateKey = (env.PAYER_PRIVATE_KEY ?? "")
-  .trim()
-  .replace(/^['"]|['"]$/g, "");
-if (!/^0x[0-9a-fA-F]{64}$/.test(payerPrivateKey)) {
-  throw new Error(
-    "PAYER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex value (64 hex chars)",
-  );
+const creditRelayerEndpoint = env.CREDIT_RELAYER_ENDPOINT ?? relayerEndpoint;
+const payerPrivateKey = env.PAYER_PRIVATE_KEY;
+if (!payerPrivateKey || !payerPrivateKey.startsWith("0x")) {
+  throw new Error("PAYER_PRIVATE_KEY is required");
 }
 
 const account = privateKeyToAccount(payerPrivateKey);
@@ -32,6 +31,13 @@ function parseBoolean(value, fallback = false) {
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function parseBigInt(value, fallback) {
+  if (value === undefined) return fallback;
+  const normalized = String(value).trim();
+  if (normalized.length === 0) return fallback;
+  return BigInt(normalized);
 }
 
 function hasX402Challenge(status, headers, bodyText) {
@@ -67,84 +73,6 @@ function toHttpsUrl(input) {
   }
 }
 
-function parseObjectJson(value) {
-  if (typeof value !== "string" || value.trim().length === 0) return undefined;
-  try {
-    const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-      return parsed;
-  } catch {}
-  return undefined;
-}
-
-function normalizeServiceName(value) {
-  if (typeof value !== "string") return undefined;
-  const name = value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9_-]/g, "");
-  return name.length > 0 ? name : undefined;
-}
-
-function extractServiceNamesFromRegistration(registration) {
-  const names = new Set();
-  const push = (value) => {
-    const normalized = normalizeServiceName(value);
-    if (normalized) names.add(normalized);
-  };
-
-  const services = registration?.services;
-  if (services && typeof services === "object" && !Array.isArray(services)) {
-    for (const key of Object.keys(services)) push(key);
-  } else if (Array.isArray(services)) {
-    for (const service of services) {
-      if (!service || typeof service !== "object") continue;
-      push(service.name);
-      push(service.id);
-    }
-  }
-
-  const entrypoints = registration?.entrypoints;
-  if (
-    entrypoints &&
-    typeof entrypoints === "object" &&
-    !Array.isArray(entrypoints)
-  ) {
-    for (const key of Object.keys(entrypoints)) push(key);
-  }
-
-  const skills = registration?.skills;
-  if (Array.isArray(skills)) {
-    for (const skill of skills) {
-      if (!skill || typeof skill !== "object") continue;
-      push(skill.id);
-      push(skill.name);
-    }
-  }
-
-  return [...names];
-}
-
-function deriveHttpServiceCandidates(baseUrl, serviceNames) {
-  const candidates = [];
-  const seen = new Set();
-  const push = (value) => {
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    candidates.push(value);
-  };
-
-  push(baseUrl);
-  for (const service of serviceNames) {
-    try {
-      push(new URL(`/api/v1/${service}`, baseUrl).toString());
-    } catch {}
-  }
-
-  return candidates;
-}
-
 function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
   const candidates = [];
   const seen = new Set();
@@ -167,7 +95,7 @@ function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
   ) {
     for (const key of Object.keys(entrypoints)) {
       try {
-        push(new URL(`/api/v1/${key}`, base).toString());
+        push(new URL(`/entrypoints/${key}/invoke`, base).toString());
       } catch {}
     }
   }
@@ -182,7 +110,7 @@ function deriveA2AInvokeCandidates({ card, selectedEndpoint }) {
           : undefined;
       if (!id) continue;
       try {
-        push(new URL(`/api/v1/${id}`, base).toString());
+        push(new URL(`/entrypoints/${id}/invoke`, base).toString());
       } catch {}
     }
   }
@@ -296,9 +224,6 @@ async function discoverPayableRouteForProfile(profile) {
   for (const service of services) {
     const serviceUrl = service.url ? toHttpsUrl(service.url) : undefined;
     if (!serviceUrl) continue;
-    const serviceNames = extractServiceNamesFromRegistration(
-      parseObjectJson(profile?.raw?.registrationsJson),
-    );
 
     if (service.protocol === "a2a") {
       const cardRaw = await fetchA2ACard(serviceUrl);
@@ -323,19 +248,12 @@ async function discoverPayableRouteForProfile(profile) {
       continue;
     }
 
-    const candidateUrls =
-      service.protocol === "web"
-        ? deriveHttpServiceCandidates(serviceUrl, serviceNames)
-        : [serviceUrl];
-
-    for (const candidate of candidateUrls) {
-      const probe = await probeCandidate(candidate);
-      console.log(
-        `[discovery-probe] token=${profile.tokenId} protocol=${service.protocol} url=${candidate} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ""}`,
-      );
-      if (probe.kind === "x402") {
-        return { invokeUrl: candidate, protocol: service.protocol };
-      }
+    const probe = await probeCandidate(serviceUrl);
+    console.log(
+      `[discovery-probe] token=${profile.tokenId} protocol=${service.protocol} url=${serviceUrl} kind=${probe.kind}${probe.status ? ` status=${probe.status}` : ""}`,
+    );
+    if (probe.kind === "x402") {
+      return { invokeUrl: serviceUrl, protocol: service.protocol };
     }
   }
 
@@ -357,6 +275,7 @@ async function discoverTokenIdFromDirectory(
   });
 
   const ranked = batch
+    .filter((profile) => profile.x402Supported === true)
     .filter((profile) => profile.services.some((service) => service.url))
     .sort((a, b) => {
       const aHasA2A = a.services.some(
@@ -397,12 +316,6 @@ async function discoverTokenIdFromDirectory(
 
   return undefined;
 }
-
-const sdk = new ShieldedClientSDK({
-  endpoint: relayerEndpoint,
-  signer: async (message) => account.signMessage({ message }),
-  proofProvider: await createNoirJsProofProviderFromDefaultCircuit(),
-});
 
 const wallet = await FileBackedWalletState.create({
   filePath: env.WALLET_STATE_PATH ?? "./wallet-state.json",
@@ -450,89 +363,14 @@ const directoryClient =
   providers.length > 0
     ? createErc8004DirectoryClient({ providers })
     : undefined;
-const a2aInvokeUrl = env.A2A_INVOKE_URL;
 const chainId = Number(env.ERC8004_CHAIN_ID ?? "84532");
 const isTestnet = parseBoolean(env.ERC8004_IS_TESTNET, chainId !== 8453);
-const requireA2AX402 = parseBoolean(env.A2A_REQUIRE_X402, true);
 const discoveryRequirePayable = parseBoolean(
   env.DISCOVERY_REQUIRE_PAYABLE,
   true,
 );
 let discoveredTokenId = env.ERC8004_TOKEN_ID;
 const discoveredRouteByTokenId = new Map();
-let settlementApplied = false;
-const agentPaymentFetch = createAgentPaymentFetch({
-  sdk,
-  relayerEndpoint,
-  ...(directoryClient ? { directoryClient } : {}),
-  targetPolicy: {
-    requireX402Support: false,
-  },
-  onA2ACardResolved: async ({ selectedEndpoint, card }) => {
-    console.log(
-      `[a2a-card] endpoint=${selectedEndpoint.url ?? "n/a"} name=${card.name ?? "unknown"} x402Profiles=${card.x402Payments.length}`,
-    );
-    for (const [index, payment] of card.x402Payments.entries()) {
-      console.log(
-        `[a2a-card:x402:${index}] payee=${payment.payee ?? "n/a"} network=${payment.network ?? "n/a"} facilitator=${payment.facilitatorUrl ?? payment.endpoint ?? "n/a"}`,
-      );
-    }
-  },
-  resolveA2AInvokeTarget: async ({ target, selectedEndpoint, card }) => {
-    if (a2aInvokeUrl) return a2aInvokeUrl;
-    const discovered = discoveredRouteByTokenId.get(target.tokenId);
-    if (discovered?.invokeUrl && discovered.protocol === "a2a") {
-      return discovered.invokeUrl;
-    }
-
-    const candidates = deriveA2AInvokeCandidates({ selectedEndpoint, card });
-    for (const candidate of candidates) {
-      const probe = await probeCandidate(candidate);
-      console.log(
-        `[a2a-probe] url=${candidate} kind=${probe.kind}${probe.method ? ` method=${probe.method}` : ""}${probe.status ? ` status=${probe.status}` : ""}`,
-      );
-      if (probe.kind === "x402") {
-        return candidate;
-      }
-    }
-
-    if (requireA2AX402) {
-      throw new Error(
-        "discovered A2A endpoint did not expose an x402 challenge on tested invoke candidates",
-      );
-    }
-
-    return undefined;
-  },
-  resolveContext: async ({ requirement }) => {
-    const sync = await wallet.sync();
-    const spendable = wallet
-      .getNotes()
-      .filter(
-        (note) => !note.spent && note.amount >= BigInt(requirement.amount),
-      )
-      .sort((a, b) =>
-        a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0,
-      )[0];
-    if (!spendable) {
-      throw new Error(
-        `no spendable note found | requirement.amount=${requirement.amount} | syncedTo=${sync.toBlock}`,
-      );
-    }
-    return wallet.getSpendContextByCommitment(spendable.commitment);
-  },
-  onRelayerSettlement: async ({ relayResponse, prepared }) => {
-    await wallet.applyRelayerSettlement({
-      settlementDelta: relayResponse.settlementDelta,
-      changeNote: prepared.changeNote,
-      changeNullifierSecret: prepared.changeNullifierSecret,
-    });
-    settlementApplied = true;
-    console.log(
-      `[settlement] status=${relayResponse.status} settlementId=${relayResponse.settlementId} tx=${relayResponse.settlementTxHash ?? "n/a"}`,
-    );
-  },
-});
 
 if (!env.TARGET_URL && !discoveredTokenId && directoryClient) {
   discoveredTokenId = await discoverTokenIdFromDirectory(
@@ -571,24 +409,185 @@ if (discoveredRoute?.invokeUrl) {
 }
 
 if (!target.url && !target.tokenId) {
-  const guidance = discoveryRequirePayable
-    ? [
-        "No x402-payable endpoint was discovered from ERC-8004 profiles.",
-        "Options:",
-        "1) set ERC8004_TOKEN_ID to a known payable agent",
-        "2) set A2A_INVOKE_URL to a known invoke endpoint that returns a 402 x402 challenge",
-        "3) set TARGET_URL to bypass discovery",
-        "4) set DISCOVERY_REQUIRE_PAYABLE=false to allow selecting non-payable/free endpoints",
-      ].join(" ")
-    : "Set TARGET_URL or ERC8004_TOKEN_ID";
-  throw new Error(guidance);
+  throw new Error("Set TARGET_URL or ERC8004_TOKEN_ID");
 }
 
-const response = await agentPaymentFetch(target, { method: "GET" });
+if (!target.url) {
+  throw new Error(
+    "Credit flow requires a resolved URL target (set TARGET_URL or discover payable invoke URL)",
+  );
+}
+const configuredChannelId = env.CREDIT_CHANNEL_ID?.trim();
+if (configuredChannelId && !/^0x[0-9a-fA-F]{64}$/.test(configuredChannelId)) {
+  throw new Error("If set, CREDIT_CHANNEL_ID must be a bytes32 hex string");
+}
+
+const shouldAutoTopup = parseBoolean(env.CREDIT_TOPUP_IF_MISSING, true);
+const topupAmountMicros = parseBigInt(env.CREDIT_TOPUP_AMOUNT_MICROS, 1000000n);
+const topupChallengeTtlSeconds = Number(
+  env.CREDIT_TOPUP_CHALLENGE_TTL_SECONDS ?? "600",
+);
+const creditNetwork =
+  env.CREDIT_NETWORK ?? `eip155:${env.ERC8004_CHAIN_ID ?? "84532"}`;
+const creditAsset =
+  env.CREDIT_ASSET ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+const creditPayTo = env.CREDIT_PAY_TO ?? env.SHIELDED_POOL_ADDRESS;
+const creditMerchantPubKey =
+  env.CREDIT_MERCHANT_PUBKEY ??
+  "0x1111111111111111111111111111111111111111111111111111111111111111";
+const creditVerifyingContract =
+  env.CREDIT_VERIFYING_CONTRACT ?? env.SHIELDED_POOL_ADDRESS;
+
+function isFieldSafeHex(value) {
+  const BN254_FIELD_MODULUS =
+    21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  try {
+    const n = BigInt(value);
+    return n >= 0n && n < BN254_FIELD_MODULUS;
+  } catch {
+    return false;
+  }
+}
+
+function parsePaymentSignatureHeader(rawHeader) {
+  const decoded = Buffer.from(rawHeader, "base64").toString("utf8");
+  const envelope = JSON.parse(decoded);
+  if (
+    !envelope ||
+    envelope.x402Version !== 2 ||
+    typeof envelope.signature !== "string"
+  ) {
+    throw new Error("invalid PAYMENT-SIGNATURE envelope");
+  }
+  return envelope;
+}
+
+async function ensureCreditState(creditClient) {
+  const resolvedChannelId = await creditClient.getChannelId();
+  console.log(
+    `[credit] channelId=${resolvedChannelId}${configuredChannelId ? " (configured)" : " (derived)"}`,
+  );
+  const latest = creditClient.getLatestState();
+  if (latest) {
+    console.log(
+      `[credit] existing channel state found seq=${latest.state.seq} available=${latest.state.available}`,
+    );
+    return resolvedChannelId;
+  }
+
+  if (!shouldAutoTopup) {
+    throw new Error(
+      "No existing credit state found and CREDIT_TOPUP_IF_MISSING=false. Top up manually first.",
+    );
+  }
+  if (!creditPayTo || !creditPayTo.startsWith("0x")) {
+    throw new Error(
+      "CREDIT_PAY_TO (or SHIELDED_POOL_ADDRESS) is required for credit topup",
+    );
+  }
+  if (!creditVerifyingContract || !creditVerifyingContract.startsWith("0x")) {
+    throw new Error(
+      "CREDIT_VERIFYING_CONTRACT (or SHIELDED_POOL_ADDRESS) is required for credit topup",
+    );
+  }
+
+  const spendable = wallet
+    .getNotes()
+    .filter(
+      (note) =>
+        note.leafIndex >= 0 &&
+        !note.spent &&
+        note.amount >= topupAmountMicros &&
+        isFieldSafeHex(note.rho) &&
+        isFieldSafeHex(note.pkHash) &&
+        isFieldSafeHex(note.nullifierSecret),
+    )
+    .sort((a, b) => b.leafIndex - a.leafIndex)[0];
+
+  if (!spendable) {
+    throw new Error(
+      `No spendable note available for topup amount ${topupAmountMicros.toString()} micros. Run seed-note and sync wallet state.`,
+    );
+  }
+
+  console.log(
+    `[credit] no channel state found, topping up ${topupAmountMicros.toString()} micros from note ${spendable.commitment}`,
+  );
+
+  const sdk = new ShieldedClientSDK({
+    endpoint: creditRelayerEndpoint,
+    signer: (message) => account.signMessage({ message }),
+    proofProvider: await createNoirJsProofProviderFromDefaultCircuit({
+      backendProofOptions: { verifierTarget: "evm" },
+    }),
+  });
+
+  const spendContext = wallet.getSpendContextByCommitment(spendable.commitment);
+  const challengeNonce = `0x${randomBytes(32).toString("hex")}`;
+  const prepared = await sdk.prepare402Payment(
+    {
+      x402Version: 2,
+      scheme: "exact",
+      network: creditNetwork,
+      asset: creditAsset,
+      payTo: creditPayTo,
+      rail: "shielded-usdc",
+      amount: topupAmountMicros.toString(),
+      challengeNonce,
+      challengeExpiry: String(
+        Math.floor(Date.now() / 1000) + topupChallengeTtlSeconds,
+      ),
+      merchantPubKey: creditMerchantPubKey,
+      verifyingContract: creditVerifyingContract,
+    },
+    spendContext.note,
+    spendContext.witness,
+    spendContext.nullifierSecret,
+  );
+
+  const paymentHeader = prepared.headers.get("PAYMENT-SIGNATURE");
+  if (!paymentHeader) {
+    throw new Error("failed to build PAYMENT-SIGNATURE for topup");
+  }
+  const paymentEnvelope = parsePaymentSignatureHeader(paymentHeader);
+  const topupResult = await creditClient.topup({
+    requestId: `credit-topup-${Date.now()}`,
+    paymentPayload: prepared.response,
+    paymentPayloadSignature: paymentEnvelope.signature,
+  });
+  if (topupResult.status !== "DONE") {
+    throw new Error(topupResult.failureReason ?? "credit topup failed");
+  }
+
+  await wallet.markNoteSpent(spendContext.note.commitment);
+  await wallet.addOrUpdateNote(
+    prepared.changeNote,
+    prepared.changeNullifierSecret,
+  );
+  console.log(
+    `[credit] topup complete seq=${topupResult.nextState?.seq ?? "n/a"} available=${topupResult.nextState?.available ?? "n/a"}`,
+  );
+  return resolvedChannelId;
+}
+
+const creditClient = createCreditChannelClient({
+  relayerEndpoint: creditRelayerEndpoint,
+  ...(configuredChannelId ? { channelId: configuredChannelId } : {}),
+  agentAddress: account.address,
+  signer: {
+    signTypedData: (args) => account.signTypedData(args),
+  },
+  stateStore: wallet,
+});
+const resolvedChannelId = await ensureCreditState(creditClient);
+const creditFetch = createCreditShieldedFetch({
+  creditClient,
+});
+const response = await creditFetch(target.url, { method: "GET" });
 const text = await response.text();
 console.log(`[result] status=${response.status}`);
-console.log(`[result] settlement-applied=${settlementApplied}`);
 console.log(
-  `[result] relayer-settlement-id=${response.headers.get("x-relayer-settlement-id") ?? "n/a"}`,
+  `[result] relayer-settlement-id=${response.headers.get("x-relayer-settlement-id") ?? "n/a"} channelId=${resolvedChannelId}`,
 );
 console.log(text);

@@ -1,11 +1,19 @@
 import {
   X402_HEADERS,
   encodeX402Header,
+  getIntegerStringFromRecords,
+  getRecord,
+  getString,
+  getStringFromRecords,
   parsePaymentRequiredEnvelope,
   parsePaymentRequiredHeader,
   type PaymentRequirement,
   type RequirementAdapterContext
 } from '@shielded-x402/shared-types';
+
+const ZERO_BYTES32 = (`0x${'0'.repeat(64)}` as const);
+const ZERO_ADDRESS = (`0x${'0'.repeat(40)}` as const);
+const ZERO_ASSET = (`0x${'0'.repeat(64)}` as const);
 
 export interface RequirementAdapter {
   name: string;
@@ -23,17 +31,26 @@ function normalizeRequirementLikeGeneric(
   ctx: RequirementAdapterContext
 ): Record<string, unknown> | undefined {
   const extra = getRecord(value.extra);
-  const scheme = (getString(value, 'scheme') ?? getString(extra ?? {}, 'scheme') ?? 'exact').toLowerCase();
-  const network = getString(value, 'network') ?? getString(extra ?? {}, 'network');
-  const payTo = getString(value, 'payTo') ?? getString(value, 'to') ?? getString(extra ?? {}, 'payTo');
-  const asset = getString(value, 'asset') ?? getString(extra ?? {}, 'asset');
-  const amount =
-    getIntegerString(value, 'amount') ??
-    getIntegerString(value, 'maxAmountRequired') ??
-    getIntegerString(extra ?? {}, 'amount') ??
-    getIntegerString(extra ?? {}, 'maxAmountRequired');
+  const scheme = (getStringFromRecords('scheme', value, extra) ?? 'exact').toLowerCase();
+  const network =
+    getStringFromRecords('network', value, extra) ??
+    getStringFromRecords('chain', value, extra);
+  const payTo =
+    getStringFromRecords('payTo', value, extra) ??
+    getString(value, 'to') ??
+    getStringFromRecords('recipient', value, extra) ??
+    getStringFromRecords('address', value, extra);
+  const assetRaw =
+    getStringFromRecords('asset', value, extra) ??
+    getStringFromRecords('token', value, extra) ??
+    getStringFromRecords('assetAddress', value, extra);
+  const asset = assetRaw && assetRaw.length > 0 ? assetRaw : ZERO_ASSET;
+  const amount = getIntegerStringFromRecords('amount', value, extra) ??
+    getIntegerStringFromRecords('maxAmountRequired', value, extra) ??
+    getIntegerStringFromRecords('maxAmount', value, extra) ??
+    getIntegerStringFromRecords('price', value, extra);
 
-  if (!scheme || !network || !payTo || !asset || !amount) return undefined;
+  if (!scheme || !network || !payTo || !amount) return undefined;
 
   const normalized: Record<string, unknown> = {
     scheme,
@@ -42,65 +59,50 @@ function normalizeRequirementLikeGeneric(
     payTo,
     asset
   };
-  normalized.resource =
-    getString(value, 'resource') ?? getString(extra ?? {}, 'resource') ?? ctx.requestUrl;
+  normalized.resource = getStringFromRecords('resource', value, extra) ?? ctx.requestUrl;
 
-  const description = getString(value, 'description') ?? getString(extra ?? {}, 'description');
+  const description = getStringFromRecords('description', value, extra);
   if (description) normalized.description = description;
-  const mimeType = getString(value, 'mimeType') ?? getString(extra ?? {}, 'mimeType');
+  const mimeType = getStringFromRecords('mimeType', value, extra);
   if (mimeType) normalized.mimeType = mimeType;
   const maxTimeoutSeconds = value.maxTimeoutSeconds ?? extra?.maxTimeoutSeconds;
   if (typeof maxTimeoutSeconds === 'number' && Number.isFinite(maxTimeoutSeconds)) {
     normalized.maxTimeoutSeconds = Math.trunc(maxTimeoutSeconds);
   }
   if (value.outputSchema !== undefined) normalized.outputSchema = value.outputSchema;
-  const rail = getString(value, 'rail') ?? getString(extra ?? {}, 'rail');
-  const challengeNonce =
-    getString(value, 'challengeNonce') ?? getString(extra ?? {}, 'challengeNonce');
-  const challengeExpiry =
-    getString(value, 'challengeExpiry') ?? getString(extra ?? {}, 'challengeExpiry');
-  const merchantPubKey =
-    getString(value, 'merchantPubKey') ?? getString(extra ?? {}, 'merchantPubKey');
-  const verifyingContract =
-    getString(value, 'verifyingContract') ?? getString(extra ?? {}, 'verifyingContract');
-  if (rail && challengeNonce && challengeExpiry && merchantPubKey && verifyingContract) {
-    normalized.rail = rail;
-    normalized.challengeNonce = challengeNonce;
-    normalized.challengeExpiry = challengeExpiry;
-    normalized.merchantPubKey = merchantPubKey;
-    normalized.verifyingContract = verifyingContract;
-  }
-  if (extra) normalized.extra = extra;
+  const timeoutSeconds =
+    typeof maxTimeoutSeconds === 'number' && Number.isFinite(maxTimeoutSeconds) && maxTimeoutSeconds > 0
+      ? Math.trunc(maxTimeoutSeconds)
+      : typeof maxTimeoutSeconds === 'string'
+        ? (() => {
+            const parsed = Number(maxTimeoutSeconds);
+            return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 300;
+          })()
+        : 300;
+  const fallbackChallengeExpiry = String(Math.floor(Date.now() / 1000) + timeoutSeconds);
+  const fallbackVerifyingContract =
+    /^0x[0-9a-fA-F]{40}$/.test(payTo) ? payTo : ZERO_ADDRESS;
+
+  const rail = getStringFromRecords('rail', value, extra) ?? 'x402-standard';
+  const challengeNonce = getStringFromRecords('challengeNonce', value, extra) ?? ZERO_BYTES32;
+  const challengeExpiry = getStringFromRecords('challengeExpiry', value, extra) ?? fallbackChallengeExpiry;
+  const merchantPubKey = getStringFromRecords('merchantPubKey', value, extra) ?? ZERO_BYTES32;
+  const verifyingContract = getStringFromRecords('verifyingContract', value, extra) ?? fallbackVerifyingContract;
+
+  normalized.rail = rail;
+  normalized.challengeNonce = challengeNonce;
+  normalized.challengeExpiry = challengeExpiry;
+  normalized.merchantPubKey = merchantPubKey;
+  normalized.verifyingContract = verifyingContract;
+  normalized.extra = {
+    ...(extra ?? {}),
+    rail,
+    challengeNonce,
+    challengeExpiry,
+    merchantPubKey,
+    verifyingContract
+  };
   return normalized;
-}
-
-function getRecord(input: unknown): Record<string, unknown> | undefined {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  return input as Record<string, unknown>;
-}
-
-function getString(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function getIntegerString(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (/^\d+$/.test(trimmed)) return trimmed;
-    if (trimmed.length > 0 && Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0) {
-      return Math.trunc(Number(trimmed)).toString();
-    }
-    return undefined;
-  }
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-    return Math.trunc(value).toString();
-  }
-  if (typeof value === 'bigint' && value >= 0n) {
-    return value.toString();
-  }
-  return undefined;
 }
 
 function matchingAdapters(
@@ -121,6 +123,43 @@ function normalizeRequirementLikeWithAdapters(
     if (normalized) return normalized;
   }
   return undefined;
+}
+
+function parseJsonRecord(text: string): Record<string, unknown> | undefined {
+  if (text.length === 0) return undefined;
+  try {
+    return getRecord(JSON.parse(text) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractRequirementCandidates(bodyRecord: Record<string, unknown>): Record<string, unknown>[] {
+  const candidates: unknown[] = [];
+  if (Array.isArray(bodyRecord.accepts)) candidates.push(...bodyRecord.accepts);
+  if (Array.isArray(bodyRecord.requirements)) candidates.push(...bodyRecord.requirements);
+  if (candidates.length === 0) candidates.push(bodyRecord);
+  return candidates
+    .map((entry) => getRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+function pickNormalizedRequirement(
+  bodyRecord: Record<string, unknown>,
+  normalizer: (entry: Record<string, unknown>) => Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  return extractRequirementCandidates(bodyRecord)
+    .map((entry) => normalizer(entry))
+    .find((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+async function parseResponseBodyRecord(response: Response): Promise<Record<string, unknown> | undefined> {
+  try {
+    const text = await response.clone().text();
+    return parseJsonRecord(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function withHeader(response: Response, headerValue: string): Response {
@@ -149,30 +188,26 @@ export function createGenericX402V2Adapter(): RequirementAdapter {
       if (response.status !== 402) return response;
       const directHeader = response.headers.get(X402_HEADERS.paymentRequired);
       if (directHeader) {
-        parsePaymentRequiredEnvelope(directHeader);
-        return response;
+        const envelope = parsePaymentRequiredEnvelope(directHeader);
+        const firstAccepted = getRecord(envelope.accepts[0]);
+        if (!firstAccepted) return response;
+        const normalized = normalizeRequirementLikeGeneric(firstAccepted, ctx);
+        if (!normalized) return response;
+        const normalizedEnvelope = {
+          x402Version: 2 as const,
+          accepts: [normalized],
+          ...(typeof envelope.error === 'string' ? { error: envelope.error } : {})
+        };
+        return withHeader(response, encodeX402Header(normalizedEnvelope));
       }
 
       const bodyText = await response.text();
-      if (bodyText.length === 0) return response;
-      let bodyRecord: Record<string, unknown> | undefined;
-      try {
-        bodyRecord = getRecord(JSON.parse(bodyText) as unknown);
-      } catch {
-        bodyRecord = undefined;
-      }
+      const bodyRecord = parseJsonRecord(bodyText);
       if (!bodyRecord) return response;
 
-      const candidates: unknown[] = [];
-      if (Array.isArray(bodyRecord.accepts)) candidates.push(...bodyRecord.accepts);
-      if (Array.isArray(bodyRecord.requirements)) candidates.push(...bodyRecord.requirements);
-      if (candidates.length === 0) candidates.push(bodyRecord);
-
-      const normalized = candidates
-        .map((entry) => getRecord(entry))
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-        .map((entry) => normalizeRequirementLikeGeneric(entry, ctx))
-        .find((entry): entry is Record<string, unknown> => Boolean(entry));
+      const normalized = pickNormalizedRequirement(bodyRecord, (entry) =>
+        normalizeRequirementLikeGeneric(entry, ctx)
+      );
 
       if (!normalized) {
         return new Response(bodyText, {
@@ -251,32 +286,46 @@ export async function parseRequirementFrom402Response(
   const normalized = await normalizeIncoming402WithAdapters(response, ctx, adapters);
   const header = normalized.headers.get(X402_HEADERS.paymentRequired);
   if (header) {
-    return {
-      response: normalized,
-      requirement: parsePaymentRequiredHeader(header)
-    };
+    try {
+      return {
+        response: normalized,
+        requirement: parsePaymentRequiredHeader(header)
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('payment requirement missing shielded rail metadata')) {
+        throw error;
+      }
+      const envelope = parsePaymentRequiredEnvelope(header);
+      const firstAccepted = getRecord(envelope.accepts[0]);
+      if (firstAccepted) {
+        const normalizedFallback =
+          normalizeRequirementLikeWithAdapters(firstAccepted, ctx, adapters) ??
+          normalizeRequirementLikeGeneric(firstAccepted, ctx);
+        if (normalizedFallback) {
+          const repairedHeader = encodeX402Header({
+            x402Version: 2 as const,
+            accepts: [normalizedFallback],
+            ...(typeof envelope.error === 'string' ? { error: envelope.error } : {})
+          });
+          return {
+            response: withHeader(normalized, repairedHeader),
+            requirement: parsePaymentRequiredHeader(repairedHeader)
+          };
+        }
+      }
+      throw error;
+    }
   }
 
-  let bodyRecord: Record<string, unknown> | undefined;
-  try {
-    bodyRecord = getRecord((await normalized.clone().json()) as unknown);
-  } catch {
-    bodyRecord = undefined;
-  }
+  const bodyRecord = await parseResponseBodyRecord(normalized);
   if (!bodyRecord) {
     throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);
   }
 
-  const candidates: unknown[] = [];
-  if (Array.isArray(bodyRecord.accepts)) candidates.push(...bodyRecord.accepts);
-  if (Array.isArray(bodyRecord.requirements)) candidates.push(...bodyRecord.requirements);
-  if (candidates.length === 0) candidates.push(bodyRecord);
-
-  const normalizedRequirement = candidates
-    .map((entry) => getRecord(entry))
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-    .map((entry) => normalizeRequirementLikeWithAdapters(entry, ctx, adapters))
-    .find((entry): entry is Record<string, unknown> => Boolean(entry));
+  const normalizedRequirement = pickNormalizedRequirement(bodyRecord, (entry) =>
+    normalizeRequirementLikeWithAdapters(entry, ctx, adapters)
+  );
 
   if (!normalizedRequirement) {
     throw new Error(`missing ${X402_HEADERS.paymentRequired} header`);

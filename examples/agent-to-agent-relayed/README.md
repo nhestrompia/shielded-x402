@@ -4,20 +4,22 @@ This example shows how to:
 
 1. resolve an agent target via ERC-8004 providers (Envio GraphQL + onchain registry + optional scan API),
 2. select a compatible endpoint with deterministic policy,
-3. pay through the existing shielded relayer flow (`shielded-usdc`),
-4. persist note state locally for subsequent calls.
+3. bootstrap credit channel state with one proof-backed topup when missing,
+4. pay through the credit channel relayer flow (signature-only debit),
+5. persist co-signed credit state locally for subsequent calls.
 
 ## Run
 
 ```bash
-cd /Users/nhestrompia/Projects/shielded-402
+cd /path/to/shielded-402
 pnpm --filter @shielded-x402/shared-types build
 pnpm --filter @shielded-x402/erc8004-adapter build
 pnpm --filter @shielded-x402/client build
 
-cd /Users/nhestrompia/Projects/shielded-402/examples/agent-to-agent-relayed
+cd examples/agent-to-agent-relayed
 npm install
 cp .env.example .env
+npm run seed-note
 npm run start
 ```
 
@@ -27,6 +29,9 @@ npm run start
 - `PAYER_PRIVATE_KEY`
 - `SHIELDED_POOL_ADDRESS`
 - `WALLET_INDEXER_URL` or `POOL_RPC_URL`
+- `CREDIT_CHANNEL_ID` (optional; if unset, SDK derives deterministic channel id)
+- `CREDIT_TOPUP_IF_MISSING` (default `true`)
+- `CREDIT_TOPUP_AMOUNT_MICROS` (default `1000000`)
 
 Target selection:
 
@@ -38,8 +43,9 @@ Runtime behavior:
 
 - For A2A endpoints, the script fetches the discovered agent card and derives invoke candidates.
 - It probes candidates and prefers one that returns a real x402 challenge (`402` + x402 shape).
-- With `A2A_REQUIRE_X402=true` (default), the run fails fast if discovery returns only free metadata endpoints.
 - With `DISCOVERY_REQUIRE_PAYABLE=true` (default), auto-token discovery only accepts routes that are live and x402-payable.
+- Debit calls use credit mode only and do not fall back to proof-per-request.
+- If no co-signed credit state exists in wallet state, the script auto-topups once (`CREDIT_TOPUP_IF_MISSING=true`) using a spendable shielded note from the wallet.
 
 Provider priority:
 

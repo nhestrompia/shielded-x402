@@ -39,10 +39,10 @@ ShieldedPool.Spent.handler(async ({ event, context }) => {
 ShieldedPool.Withdrawn.handler(async ({ event, context }) => {
   const entity: ShieldedPool_Withdrawn = {
     id: `${event.chainId}_${event.block.number}_${event.logIndex}`,
-    merchant: event.params.merchant,
+    nullifier: event.params.nullifier,
     recipient: event.params.recipient,
     amount: event.params.amount,
-    claimId: event.params.claimId,
+    challengeNonce: event.params.challengeNonce,
   };
 
   context.ShieldedPool_Withdrawn.set(entity);

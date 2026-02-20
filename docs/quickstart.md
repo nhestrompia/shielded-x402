@@ -1,78 +1,98 @@
 # Quickstart
 
-## 1) Install and validate
+## 1) Install + baseline validation
 
 - `pnpm install`
 - `pnpm contracts:deps`
 - `pnpm doctor`
-
-`pnpm doctor` checks `node`, `pnpm`, `forge`, `nargo`, `bb`, and Solady presence.
-
-## 2) Build and test
-
 - `pnpm build`
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm contracts:test`
 
-## 3) Circuit checks and verifier generation
+## 2) Circuit + verifier artifacts
 
 - `pnpm circuit:check`
 - `pnpm circuit:verifier`
-- `pnpm circuit:fixture` (generates `ops/fixtures/sepolia-payment-response.json` from bb proof output)
+- `pnpm circuit:fixture`
 
-Verifier output target:
+Outputs:
 
 - `contracts/generated/UltraVerifier.sol`
-- `sdk/client/src/circuits/spend_change.json` (synced by script for default NoirJS provider)
+- `sdk/client/src/circuits/spend_change.json`
+- `ops/fixtures/sepolia-payment-response.json`
 
-## 4) Deploy to Sepolia
+## 3) Run payment relayer
 
-- `cp .env.example .env`
-- Set `SEPOLIA_RPC_URL`, `DEPLOYER_PRIVATE_KEY`, `USDC_ADDRESS`
-- Run `pnpm deploy:sepolia`
+```bash
+pnpm relayer:dev
+```
 
-Deployment script outputs:
+Required env (minimum):
 
-- UltraVerifier address
-- NoirVerifierAdapter address
-- ShieldedPool address
+- `RELAYER_RPC_URL` (or `SEPOLIA_RPC_URL`)
+- `SHIELDED_POOL_ADDRESS`
+- `RELAYER_PRIVATE_KEY`
+- `RELAYER_CHAIN_ID`
 
-## 5) Run merchant gateway
+Common optional env:
 
-- Set `PAYMENT_RELAYER_PRIVATE_KEY` to a funded key on the same chain as `SHIELDED_POOL_ADDRESS`.
-- `pnpm --filter @shielded-x402/merchant-gateway dev`
+- `RELAYER_PAYOUT_MODE=forward|noop|x402`
+- `RELAYER_PAYOUT_HEADERS_JSON='{"authorization":"Bearer ..."}'`
+- `RELAYER_CREDIT_HEAD_STORE_PATH=/path/to/credit-heads.json`
+- `CREDIT_SETTLEMENT_CONTRACT` + `CREDIT_SETTLEMENT_RPC_URL`
 
-Gateway endpoints:
+## 4) Prepare agent wallet state
 
-- `GET /health`
-- `GET /x402/requirement` (optional challenge prefetch for faster client-side proving)
-- `GET /paid/data` (shielded x402 protected)
-- `POST /merchant/withdraw/sign` (withdrawal auth signing)
+Create wallet state and seed at least one spendable note.
 
-`GET /paid/data` returns `200` only after successful onchain settlement (`submitSpend`) when relayer mode is enabled.
+Reference scripts:
 
-## 6) Run payment relayer (merchant unchanged mode)
+- `examples/agent-to-agent-relayed/seed-note.mjs`
+- `examples/agent-to-agent-relayed/test-agent-payment.mjs`
 
-- Set `RELAYER_RPC_URL`, `SHIELDED_POOL_ADDRESS`, `ULTRA_VERIFIER_ADDRESS`, `RELAYER_PRIVATE_KEY`.
-- Optional payout configuration:
-  - `RELAYER_PAYOUT_MODE=forward|noop`
-  - `RELAYER_PAYOUT_HEADERS_JSON='{\"authorization\":\"Bearer ...\"}'`
-- Run: `pnpm relayer:dev`
+## 5) Run credit flow example
 
-## 7) Run live Sepolia E2E
+Agent-to-agent relayed example:
 
-- Provide a valid proof fixture JSON via `E2E_PAYMENT_RESPONSE_FILE`
-- Set `FIXED_CHALLENGE_NONCE` to the nonce the fixture proof was generated against
-- Run: `pnpm test:sepolia-live`
+```bash
+cd examples/agent-to-agent-relayed
+npm install
+cp .env.example .env
+npm run seed-note
+npm run start
+```
 
-## 8) Local Anvil dummy deployment
+What it does:
 
-- Start anvil: `anvil --chain-id 31337`
-- Deploy local stack: `pnpm deploy:anvil:dummy`
-- Use printed addresses to configure gateway env for local integration.
-- Run full automated local smoke test: `pnpm e2e:anvil`
+1. resolves a payable target URL (direct or ERC-8004),
+2. bootstraps channel credit with one proof-backed topup if needed,
+3. performs paid calls via signature-only debit (`/v1/relay/credit/pay`).
 
-For full command sequences, see:
+## 6) Optional PayAI credit example
 
-- `/shielded-402/docs/testing-playbook.md`
+```bash
+cd examples/payai-shielded-relay
+npm install
+cp .env.example .env
+npm run seed-note
+npm run start
+```
+
+This validates relayer `x402` payout mode against a standard upstream x402 endpoint.
+
+## 7) Optional onchain channel close flow
+
+If `CREDIT_SETTLEMENT_CONTRACT` is configured:
+
+- `POST /v1/relay/credit/close/start`
+- `POST /v1/relay/credit/close/challenge`
+- `POST /v1/relay/credit/close/finalize`
+
+## 8) Local Anvil smoke
+
+- `anvil --chain-id 31337`
+- `pnpm deploy:anvil:dummy`
+- `pnpm e2e:anvil`
+
+For deeper command sequences, see `docs/testing-playbook.md`.

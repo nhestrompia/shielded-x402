@@ -2,10 +2,12 @@
 
 This example validates the **published npm packages** in a real consumer setup against the local Anvil gateway flow.
 
+It is a direct proof header flow against the gateway endpoint (not the relayer credit channel path).
+
 ## 1) Install dependencies in this folder
 
 ```bash
-cd shielded-402/examples/npm-anvil
+cd /path/to/shielded-402/examples/npm-anvil
 npm init -y
 npm i @shielded-x402/client @noir-lang/noir_js @aztec/bb.js viem
 ```
@@ -22,7 +24,7 @@ You can follow:
 ## 3) Run this example
 
 ```bash
-cd shielded-402/examples/npm-anvil
+cd /path/to/shielded-402/examples/npm-anvil
 node test-anvil.mjs
 ```
 
