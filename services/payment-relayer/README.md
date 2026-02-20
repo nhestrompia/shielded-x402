@@ -21,6 +21,7 @@ pnpm relayer:dev
 - `SHIELDED_POOL_ADDRESS`
 - `RELAYER_VERIFYING_CONTRACT` (preferred) or `PAYMENT_VERIFYING_CONTRACT` or `ULTRA_VERIFIER_ADDRESS`
 - `RELAYER_PRIVATE_KEY` (or `PAYMENT_RELAYER_PRIVATE_KEY`)
+- `RELAYER_UNSAFE_DEV_MODE` (default `false`; keep `false` in production)
 - `RELAYER_PAYOUT_MODE=forward|noop|x402`
 - `RELAYER_PAYOUT_HEADERS_JSON` (JSON map, used by `forward` mode)
 - `RELAYER_SHIELDED_VERIFYING_CONTRACT` (fallback verifying contract; defaults to `SHIELDED_POOL_ADDRESS`)
@@ -36,6 +37,10 @@ pnpm relayer:dev
 
 Verifier address note:
 - For this relayer verification path, point the verifier env var to the `NoirVerifierAdapter` contract (the compact public-input verifier interface), not the raw generated Ultra/Honk verifier unless you also provide expanded 161 public inputs.
+
+Safety note:
+- With `RELAYER_UNSAFE_DEV_MODE=false` (default), relayer startup fails if onchain verifier/settlement config is missing.
+- Set `RELAYER_UNSAFE_DEV_MODE=true` only for local insecure testing.
 
 ## Endpoints
 

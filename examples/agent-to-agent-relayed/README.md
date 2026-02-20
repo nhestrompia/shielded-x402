@@ -33,6 +33,11 @@ npm run start
 - `CREDIT_TOPUP_IF_MISSING` (default `true`)
 - `CREDIT_TOPUP_AMOUNT_MICROS` (default `1000000`)
 
+Relayer safety default:
+
+- relayer is fail-closed by default (`RELAYER_UNSAFE_DEV_MODE=false`)
+- if verifier/settlement env is missing, relayer startup fails
+
 Target selection:
 
 - Either set `TARGET_URL` directly, or

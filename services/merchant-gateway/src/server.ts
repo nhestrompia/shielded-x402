@@ -9,11 +9,20 @@ import { createShieldedPaymentMiddleware } from './middleware/shieldedPayment.js
 import { createAllowAllVerifier, createOnchainVerifier } from './lib/verifier.js';
 import { createNoopSettlement, createOnchainSettlement } from './lib/settlement.js';
 
+function parseBoolean(value: string | undefined, fallback = false): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
 const rpcUrl = process.env.SEPOLIA_RPC_URL;
 const shieldedPoolAddress = process.env.SHIELDED_POOL_ADDRESS as `0x${string}` | undefined;
 const ultraVerifierAddress = process.env.ULTRA_VERIFIER_ADDRESS as `0x${string}` | undefined;
 const paymentVerifyingContract = process.env.PAYMENT_VERIFYING_CONTRACT as `0x${string}` | undefined;
 const paymentRelayerPrivateKey = process.env.PAYMENT_RELAYER_PRIVATE_KEY as `0x${string}` | undefined;
+const unsafeDevMode = parseBoolean(process.env.GATEWAY_UNSAFE_DEV_MODE, false);
 const registryUrl = process.env.ERC8004_REGISTRY_URL;
 const fixedChallengeNonce = process.env.FIXED_CHALLENGE_NONCE as `0x${string}` | undefined;
 
@@ -24,8 +33,36 @@ if (registryUrl) {
 }
 const erc8004 = new Erc8004Adapter(erc8004Config);
 
+if (!unsafeDevMode) {
+  const missingVerifierEnv: string[] = [];
+  if (!rpcUrl) missingVerifierEnv.push('SEPOLIA_RPC_URL');
+  if (!shieldedPoolAddress) missingVerifierEnv.push('SHIELDED_POOL_ADDRESS');
+  if (!ultraVerifierAddress) missingVerifierEnv.push('ULTRA_VERIFIER_ADDRESS');
+  if (missingVerifierEnv.length > 0) {
+    throw new Error(
+      `Missing required verifier env: ${missingVerifierEnv.join(', ')}. Set GATEWAY_UNSAFE_DEV_MODE=true only for local insecure testing.`
+    );
+  }
+  if (!paymentRelayerPrivateKey) {
+    throw new Error(
+      'PAYMENT_RELAYER_PRIVATE_KEY is required for onchain settlement confirmation. Set GATEWAY_UNSAFE_DEV_MODE=true only for local insecure testing.'
+    );
+  }
+}
+if (unsafeDevMode) {
+  console.warn(
+    '[merchant-gateway] GATEWAY_UNSAFE_DEV_MODE=true -> running with insecure fallback adapters when onchain config is missing.'
+  );
+}
+
 const verifier =
-  rpcUrl && shieldedPoolAddress && ultraVerifierAddress
+  !unsafeDevMode
+    ? createOnchainVerifier({
+        rpcUrl: rpcUrl!,
+        shieldedPoolAddress: shieldedPoolAddress!,
+        ultraVerifierAddress: ultraVerifierAddress!,
+      })
+    : rpcUrl && shieldedPoolAddress && ultraVerifierAddress
     ? createOnchainVerifier({
         rpcUrl,
         shieldedPoolAddress,
@@ -34,7 +71,13 @@ const verifier =
     : createAllowAllVerifier();
 
 const settlement =
-  rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey
+  !unsafeDevMode
+    ? createOnchainSettlement({
+        rpcUrl: rpcUrl!,
+        shieldedPoolAddress: shieldedPoolAddress!,
+        relayerPrivateKey: paymentRelayerPrivateKey!,
+      })
+    : rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey
     ? createOnchainSettlement({
         rpcUrl,
         shieldedPoolAddress,
@@ -71,6 +114,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
+    unsafeDevMode,
     erc8004Enabled,
     onchainVerifierEnabled: Boolean(rpcUrl && shieldedPoolAddress && ultraVerifierAddress),
     onchainSettlementEnabled: Boolean(rpcUrl && shieldedPoolAddress && paymentRelayerPrivateKey)

@@ -160,6 +160,52 @@ Use `createAgentPaymentFetch` when the target can be either:
 
 `createAgentPaymentFetch` resolves endpoint selection first, then always executes the credit fetch path.
 
+### Minimal ERC-8004 Example
+
+```ts
+import {
+  createAgentPaymentFetch,
+  createCreditChannelClient,
+  FileBackedWalletState
+} from '@shielded-x402/client';
+import {
+  createErc8004DirectoryClient,
+  createEnvioGraphqlProvider
+} from '@shielded-x402/erc8004-adapter';
+
+const wallet = await FileBackedWalletState.create({
+  filePath: './wallet-state.json',
+  shieldedPoolAddress: process.env.SHIELDED_POOL_ADDRESS as `0x${string}`,
+  indexerGraphqlUrl: process.env.WALLET_INDEXER_URL
+});
+
+const creditClient = createCreditChannelClient({
+  relayerEndpoint: process.env.RELAYER_ENDPOINT!,
+  agentAddress: account.address,
+  signer: { signTypedData: (args) => account.signTypedData(args) },
+  stateStore: wallet
+});
+
+const directoryClient = createErc8004DirectoryClient({
+  providers: [
+    createEnvioGraphqlProvider({
+      endpointUrl: process.env.ERC8004_ENVIO_GRAPHQL_URL!
+    })
+  ]
+});
+
+const agentFetch = createAgentPaymentFetch({
+  creditClient,
+  directoryClient
+});
+
+await agentFetch({
+  type: 'erc8004',
+  chainId: 84532,
+  tokenId: '1234'
+});
+```
+
 ## Wallet State Notes
 
 `FileBackedWalletState` schema is `version: 3`.

@@ -32,8 +32,10 @@ Required env (minimum):
 
 - `RELAYER_RPC_URL` (or `SEPOLIA_RPC_URL`)
 - `SHIELDED_POOL_ADDRESS`
+- `RELAYER_VERIFYING_CONTRACT` (NoirVerifierAdapter address)
 - `RELAYER_PRIVATE_KEY`
 - `RELAYER_CHAIN_ID`
+- `RELAYER_UNSAFE_DEV_MODE=false`
 
 Common optional env:
 
@@ -41,6 +43,8 @@ Common optional env:
 - `RELAYER_PAYOUT_HEADERS_JSON='{"authorization":"Bearer ..."}'`
 - `RELAYER_CREDIT_HEAD_STORE_PATH=/path/to/credit-heads.json`
 - `CREDIT_SETTLEMENT_CONTRACT` + `CREDIT_SETTLEMENT_RPC_URL`
+
+`RELAYER_UNSAFE_DEV_MODE=true` is only for local insecure testing.
 
 ## 4) Prepare agent wallet state
 
@@ -68,6 +72,12 @@ What it does:
 1. resolves a payable target URL (direct or ERC-8004),
 2. bootstraps channel credit with one proof-backed topup if needed,
 3. performs paid calls via signature-only debit (`/v1/relay/credit/pay`).
+
+ERC-8004 adapter env for this example (optional):
+
+- `ERC8004_ENVIO_GRAPHQL_URL`
+- `ERC8004_REGISTRY_ADDRESS` + `ERC8004_RPC_URL` + `ERC8004_CHAIN_ID`
+- `ERC8004_SCAN_API_URL`
 
 ## 6) Optional PayAI credit example
 

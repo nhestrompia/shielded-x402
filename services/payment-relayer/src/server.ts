@@ -37,6 +37,14 @@ function parseStaticHeaders(raw: string | undefined): Record<string, string> {
   return out;
 }
 
+function parseBoolean(value: string | undefined, fallback = false): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -105,6 +113,7 @@ const relayerX402Chain = (process.env.RELAYER_X402_CHAIN ?? "base-sepolia") as
   | "sepolia";
 const disablePreverify =
   (process.env.RELAYER_DISABLE_PREVERIFY ?? "false").toLowerCase() === "true";
+const unsafeDevMode = parseBoolean(process.env.RELAYER_UNSAFE_DEV_MODE, false);
 const relayerChainId = Number(process.env.RELAYER_CHAIN_ID ?? "84532");
 const creditSettlementRpcUrl = process.env.CREDIT_SETTLEMENT_RPC_URL ?? rpcUrl;
 const creditSettlementContract = process.env.CREDIT_SETTLEMENT_CONTRACT as
@@ -126,9 +135,42 @@ if (!relayerPrivateKey) {
 if (!Number.isFinite(relayerChainId)) {
   throw new Error("RELAYER_CHAIN_ID must be a finite number");
 }
+if (!unsafeDevMode) {
+  const missingForOnchainVerifier: string[] = [];
+  if (!rpcUrl) missingForOnchainVerifier.push("RELAYER_RPC_URL (or SEPOLIA_RPC_URL)");
+  if (!shieldedPoolAddress) missingForOnchainVerifier.push("SHIELDED_POOL_ADDRESS");
+  if (!verifyingContractAddress) {
+    missingForOnchainVerifier.push(
+      "RELAYER_VERIFYING_CONTRACT (or PAYMENT_VERIFYING_CONTRACT / ULTRA_VERIFIER_ADDRESS)",
+    );
+  }
+  if (missingForOnchainVerifier.length > 0) {
+    throw new Error(
+      `Missing required onchain verifier env: ${missingForOnchainVerifier.join(
+        ", ",
+      )}. Set RELAYER_UNSAFE_DEV_MODE=true only for local insecure testing.`,
+    );
+  }
+  if (disablePreverify) {
+    throw new Error(
+      "RELAYER_DISABLE_PREVERIFY=true is not allowed in production mode. Set RELAYER_UNSAFE_DEV_MODE=true for local insecure testing.",
+    );
+  }
+}
+if (unsafeDevMode) {
+  console.warn(
+    "[payment-relayer] RELAYER_UNSAFE_DEV_MODE=true -> running with insecure fallback adapters when onchain config is missing.",
+  );
+}
 
 const verifier =
-  !disablePreverify && rpcUrl && shieldedPoolAddress && verifyingContractAddress
+  !unsafeDevMode
+    ? createOnchainVerifier({
+        rpcUrl: rpcUrl!,
+        shieldedPoolAddress: shieldedPoolAddress!,
+        ultraVerifierAddress: verifyingContractAddress!,
+      })
+    : !disablePreverify && rpcUrl && shieldedPoolAddress && verifyingContractAddress
     ? createOnchainVerifier({
         rpcUrl,
         shieldedPoolAddress,
@@ -137,7 +179,13 @@ const verifier =
     : createAllowAllVerifier();
 
 const settlement =
-  rpcUrl && shieldedPoolAddress && relayerPrivateKey
+  !unsafeDevMode
+    ? createOnchainSettlement({
+        rpcUrl: rpcUrl!,
+        shieldedPoolAddress: shieldedPoolAddress!,
+        relayerPrivateKey,
+      })
+    : rpcUrl && shieldedPoolAddress && relayerPrivateKey
     ? createOnchainSettlement({
         rpcUrl,
         shieldedPoolAddress,
@@ -198,6 +246,7 @@ const creditProcessor = createCreditRelayerProcessor({
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
+    unsafeDevMode,
     onchainVerifierEnabled: Boolean(
       !disablePreverify &&
       rpcUrl &&

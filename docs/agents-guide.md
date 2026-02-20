@@ -75,6 +75,31 @@ For discovery/routing:
 
 - `createAgentPaymentFetch` with ERC-8004 directory providers.
 
+### Minimal Credit Fetch Snippet
+
+```ts
+const creditClient = createCreditChannelClient({
+  relayerEndpoint: process.env.RELAYER_ENDPOINT!,
+  agentAddress: account.address,
+  signer: { signTypedData: (args) => account.signTypedData(args) },
+  stateStore: wallet
+});
+
+const creditFetch = createCreditShieldedFetch({ creditClient });
+const response = await creditFetch('https://merchant.example/paid', { method: 'GET' });
+```
+
+### Minimal ERC-8004 Snippet
+
+```ts
+const directoryClient = createErc8004DirectoryClient({
+  providers: [createEnvioGraphqlProvider({ endpointUrl: process.env.ERC8004_ENVIO_GRAPHQL_URL! })]
+});
+
+const agentFetch = createAgentPaymentFetch({ creditClient, directoryClient });
+await agentFetch({ type: 'erc8004', chainId: 84532, tokenId: '1234' });
+```
+
 ## ERC-8004 Discovery (Optional)
 
 Discovery determines *where* to call, not settlement correctness.

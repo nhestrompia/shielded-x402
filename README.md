@@ -31,6 +31,12 @@ pnpm typecheck
 pnpm contracts:test
 ```
 
+## Security Defaults
+
+- Payment relayer is fail-closed by default.
+- Missing onchain verifier/settlement config will fail startup.
+- Use `RELAYER_UNSAFE_DEV_MODE=true` only for local insecure testing.
+
 ## Main flow
 
 1. Agent tops up credit once via a shielded proof (`/v1/relay/credit/topup`).
@@ -93,4 +99,3 @@ flowchart LR
 
 - A2A credit flow: `examples/agent-to-agent-relayed/`
 - PayAI credit flow: `examples/payai-shielded-relay/`
-- Anvil consumer example: `examples/npm-anvil/`

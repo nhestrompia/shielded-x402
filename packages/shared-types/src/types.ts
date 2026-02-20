@@ -92,33 +92,6 @@ export interface RelayerMerchantRequest {
   challengeUrl?: string;
 }
 
-export interface RelayerPayRequest {
-  merchantRequest: RelayerMerchantRequest;
-  requirement: PaymentRequirement;
-  paymentSignatureHeader: string;
-  idempotencyKey?: string;
-}
-
-export interface RelayerChallengeRequest {
-  merchantRequest: RelayerMerchantRequest;
-  merchantPaymentRequiredHeader?: string;
-}
-
-export interface RelayerChallengeResponse {
-  requirement: PaymentRequirement;
-  paymentRequiredHeader: string;
-  upstreamRequirementHash: Hex;
-}
-
-export type RelayerSettlementStatus =
-  | 'RECEIVED'
-  | 'VERIFIED'
-  | 'SENT_ONCHAIN'
-  | 'CONFIRMED'
-  | 'PAID_MERCHANT'
-  | 'DONE'
-  | 'FAILED';
-
 export interface RelayerMerchantResult {
   status: number;
   headers: Record<string, string>;
@@ -132,16 +105,6 @@ export interface RelayerSettlementDelta {
   merchantLeafIndex?: number;
   changeLeafIndex?: number;
   newRoot?: Hex;
-}
-
-export interface RelayerPayResponse {
-  settlementId: string;
-  status: RelayerSettlementStatus;
-  nullifier: Hex;
-  settlementTxHash?: Hex;
-  settlementDelta?: RelayerSettlementDelta;
-  merchantResult?: RelayerMerchantResult;
-  failureReason?: string;
 }
 
 export type ServiceProtocol = 'a2a' | 'mcp' | 'web' | 'oasf' | 'email' | 'ens' | 'did';

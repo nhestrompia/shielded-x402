@@ -171,5 +171,6 @@ In relayer env (`services/payment-relayer`):
 - `RELAYER_X402_RPC_URL=<base sepolia rpc>`
 - `RELAYER_X402_PRIVATE_KEY=<funded key for upstream x402 payment>`
 - optional `RELAYER_X402_CHAIN=base-sepolia`
+- keep `RELAYER_UNSAFE_DEV_MODE=false` (default fail-closed)
 
 Without `x402` payout mode, relayer forward mode will just proxy request and upstream paid endpoint will return `402`.
