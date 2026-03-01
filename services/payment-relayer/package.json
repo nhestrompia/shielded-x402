@@ -21,7 +21,7 @@
   "dependencies": {
     "@shielded-x402/shared-types": "workspace:*",
     "express": "^5.1.0",
-    "viem": "^2.39.3",
-    "x402-fetch": "^0.6.0"
+    "viem": "^2.39.0",
+    "zod": "^4.3.6"
   }
 }

@@ -10,16 +10,6 @@ export const X402_HEADERS = {
   paymentResponse: 'PAYMENT-RESPONSE'
 } as const;
 
-export const RELAYER_ROUTES = {
-  creditDomain: '/v1/relay/credit/domain',
-  creditTopup: '/v1/relay/credit/topup',
-  creditPay: '/v1/relay/credit/pay',
-  creditCloseStart: '/v1/relay/credit/close/start',
-  creditCloseChallenge: '/v1/relay/credit/close/challenge',
-  creditCloseFinalize: '/v1/relay/credit/close/finalize',
-  creditCloseStatusPrefix: '/v1/relay/credit/close'
-} as const;
-
 function toBase64(value: string): string {
   return Buffer.from(value, 'utf8').toString('base64');
 }

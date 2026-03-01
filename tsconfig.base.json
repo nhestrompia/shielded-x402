@@ -19,7 +19,8 @@
       "@shielded-x402/erc8004-adapter": ["packages/erc8004-adapter/src/index.ts"],
       "@shielded-x402/client": ["sdk/client/src/index.ts"],
       "@shielded-x402/merchant": ["sdk/merchant/src/index.ts"],
-      "@shielded-x402/payment-relayer": ["services/payment-relayer/src/index.ts"]
+      "@shielded-x402/payment-relayer": ["services/payment-relayer/src/index.ts"],
+      "@shielded-x402/credit-sequencer": ["services/credit-sequencer/src/index.ts"]
     }
   }
 }

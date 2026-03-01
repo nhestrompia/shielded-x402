@@ -5,8 +5,7 @@
   "type": "module",
   "description": "Shielded client -> relayer -> PayAI x402 payout example",
   "scripts": {
-    "start": "node test-payai-shielded.mjs",
-    "seed-note": "node seed-note.mjs"
+    "start": "node -e \"console.error('Legacy example scripts removed. Use docs/multi-chain-credit-mvp.md and sdk/client/src/multiChainCredit.ts'); process.exit(1)\""
   },
   "dependencies": {
     "@aztec/bb.js": "3.0.0-nightly.20260102",

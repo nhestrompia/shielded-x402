@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "x402-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "x402_gateway"
+
+[features]
+no-entrypoint = []
+default = []
+
+[dependencies]
+solana-program = "3.0.0"
+solana-system-interface = { version = "3.0.0", features = ["bincode"] }
+# Pin to avoid transitive crates requiring edition2024 on older cargo toolchains.
+base64ct = "=1.6.0"

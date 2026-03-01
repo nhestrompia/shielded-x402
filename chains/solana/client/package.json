@@ -1,0 +1,15 @@
+{
+  "name": "@shielded-x402/solana-client-adapter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run encoding.test.ts"
+  },
+  "dependencies": {
+    "@solana/kit": "^2.3.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.0"
+  }
+}

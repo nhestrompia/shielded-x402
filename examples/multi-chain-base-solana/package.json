@@ -1,0 +1,11 @@
+{
+  "name": "multi-chain-base-solana-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run-full-flow.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.20.5"
+  }
+}

@@ -4,6 +4,8 @@ pragma solidity ^0.8.26;
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 contract CreditChannelSettlement {
+    uint256 internal constant _SECP256K1N_OVER_2 =
+        0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
     using SafeTransferLib for address;
 
     struct CreditState {
@@ -224,6 +226,7 @@ contract CreditChannelSettlement {
         if (v < 27) {
             v += 27;
         }
+        if (uint256(s) > _SECP256K1N_OVER_2) revert InvalidSignature();
         signer = ecrecover(digest, v, r, s);
         if (signer == address(0)) revert InvalidSignature();
     }

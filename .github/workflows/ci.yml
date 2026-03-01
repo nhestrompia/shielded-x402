@@ -40,5 +40,9 @@ jobs:
         run: pnpm test
       - name: Contracts Test
         run: FOUNDRY_OFFLINE=true forge test --root contracts
+      - name: Solana Adapter Test
+        run: pnpm solana:adapter:test
+      - name: Solana Program Test
+        run: pnpm solana:program:test
       - name: Build
         run: pnpm build

@@ -1,0 +1,10 @@
+
+> shielded-x402@0.1.0 relayer:dev /Users/nhestrompia/Projects/shielded-402
+> pnpm --filter @shielded-x402/payment-relayer dev
+
+
+> @shielded-x402/payment-relayer@0.1.0 dev /Users/nhestrompia/Projects/shielded-402/services/payment-relayer
+> tsx src/server.ts
+
+[payment-relayer] listening on 3100 chainRef=eip155:84532
+[payment-relayer] evm key configured=true valid=true len=66 preview=0xcd05...0ee7

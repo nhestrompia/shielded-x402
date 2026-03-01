@@ -29,19 +29,39 @@
     "pretest:anvil-live": "pnpm --filter @shielded-x402/shared-types build && pnpm --filter @shielded-x402/erc8004-adapter build && pnpm --filter @shielded-x402/client build",
     "test:anvil-live": "pnpm --filter @shielded-x402/merchant-gateway test:anvil-live",
     "e2e:anvil": "bash ops/e2e-anvil.sh",
+    "solana:adapter:test": "pnpm --dir chains/solana/client test",
+    "solana:program:test": "cargo test --manifest-path chains/solana/programs/x402_gateway/Cargo.toml",
+    "solana:test": "pnpm solana:adapter:test && pnpm solana:program:test",
+    "solana:deploy:verifier": "bash chains/solana/scripts/deploy-verifier.sh",
+    "solana:deploy:gateway": "bash chains/solana/scripts/deploy-gateway.sh",
+    "solana:init:gateway": "pnpm exec tsx chains/solana/scripts/init-gateway.ts",
+    "example:multi-chain:base-solana": "pnpm exec tsx examples/multi-chain-base-solana/run-full-flow.ts",
+    "dev:stack:start": "bash scripts/dev-multichain-stack.sh start",
+    "dev:stack:stop": "bash scripts/dev-multichain-stack.sh stop",
+    "dev:stack:status": "bash scripts/dev-multichain-stack.sh status",
+    "dev:stack:logs": "bash scripts/dev-multichain-stack.sh logs",
     "relayer:dev": "pnpm --filter @shielded-x402/payment-relayer dev",
+    "sequencer:dev": "pnpm --filter @shielded-x402/credit-sequencer dev",
     "envio:erc8004:codegen": "pnpm --filter envio-erc8004-indexer codegen",
     "envio:erc8004:dev": "pnpm --filter envio-erc8004-indexer dev",
     "relayer:typecheck": "pnpm --filter @shielded-x402/payment-relayer typecheck",
+    "sequencer:typecheck": "pnpm --filter @shielded-x402/credit-sequencer typecheck",
     "relayer:test": "pnpm --filter @shielded-x402/payment-relayer test",
+    "sequencer:test": "pnpm --filter @shielded-x402/credit-sequencer test",
     "publish:packages": "bash scripts/publish-packages.sh",
     "publish:packages:dry-run": "bash scripts/publish-packages.sh --dry-run"
   },
   "devDependencies": {
+    "@solana/kit": "^6.1.0",
     "@types/express": "^5.0.5",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "ws": "^8.19.0"
+  },
+  "dependencies": {
+    "node-pg-migrate": "^8.0.4",
+    "zod": "^4.3.6"
   }
 }
