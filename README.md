@@ -13,10 +13,10 @@ No backward compatibility is retained for legacy `/v1/relay/credit/*` flows.
 ```mermaid
 sequenceDiagram
   participant A as Agent SDK
-  participant M as Merchant API
   participant R as Payment Relayer
   participant Q as Sequencer
   participant P as ShieldedPool (optional)
+  participant M as Merchant API
 
   A->>M: Request protected resource
   M-->>A: 402 PAYMENT-REQUIRED
