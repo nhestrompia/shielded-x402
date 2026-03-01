@@ -7,4 +7,5 @@ export * from './multiChainCredit.js';
 export * from './notes.js';
 export * from './proofProvider.js';
 export * from './requirementAdapters.js';
+export * from './shieldedFetch.js';
 export * from './types.js';

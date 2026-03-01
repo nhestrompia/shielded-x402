@@ -5,6 +5,7 @@ Breaking multi-chain credit MVP with:
 1. one authoritative sequencer for real-time nonce/balance enforcement
 2. per-chain relayers (`Base`, `Solana`) that execute only sequencer-authorized payments
 3. periodic Base commitment roots for delayed independent auditability
+4. shielded onchain settlement as the funding source for credit balances
 
 No backward compatibility is retained for legacy `/v1/relay/credit/*` flows.
 
@@ -15,18 +16,16 @@ sequenceDiagram
   participant A as Agent SDK
   participant R as Payment Relayer
   participant Q as Sequencer
-  participant P as ShieldedPool (optional)
+  participant P as ShieldedPool
   participant M as Merchant API
 
   A->>M: Request protected resource
   M-->>A: 402 PAYMENT-REQUIRED
 
-  opt One-time funding / topup
-    A->>R: Topup request
-    R->>P: Settle funding onchain
-    R->>Q: Credit agent balance
-    Q-->>A: Credit available (nonce/balance state)
-  end
+  A->>R: One-time topup request
+  R->>P: Settle shielded topup onchain
+  R->>Q: Credit agent balance
+  Q-->>A: Credit available (nonce/balance state)
 
   loop For each paid x402 call
     A->>Q: POST /v1/credit/authorize (IntentV1 + agentSig)
@@ -45,10 +44,10 @@ sequenceDiagram
 
 Detailed architecture diagram: [docs/multi-chain-credit-mvp.md](/Users/nhestrompia/Projects/shielded-402/docs/multi-chain-credit-mvp.md)
 
-### Funding modes
+### Funding path
 
-1. **Current test/dev mode:** sequencer credit is seeded via `POST /v1/admin/credit`.
-2. **Target production mode:** shielded settlement output (`FundingSignal`) credits sequencer balances without exposing user payment graph.
+1. **Required architecture path:** shielded settlement output (`FundingSignal`) credits sequencer balances without exposing user payment graph.
+2. **Local test shortcut only:** `POST /v1/admin/credit` exists only to seed balances in dev/test environments.
 
 ## Repo layout
 
@@ -102,83 +101,72 @@ The SDK surface has two rails:
 1. `ShieldedClientSDK`: anonymous proof-backed x402 payment payload construction.
 2. `MultiChainCreditClient`: sequencer-authorized fast execution across chain-specific relayers.
 
-### 1) Anonymous shielded payment payload (`ShieldedClientSDK`)
+### Plug-and-play integration modes
+
+1. **Direct x402 header mode (merchant-facing):**
+Use `createShieldedFetch(...)`. The SDK receives `402 PAYMENT-REQUIRED`, builds `PAYMENT-SIGNATURE`, retries, and gets protected data directly from merchant.
+
+2. **Relayer-executed mode (agent-facing):**
+Use `MultiChainCreditClient` + relayer `POST /v1/relay/pay`. The relayer executes payment on behalf of agent, calls merchant, and returns merchant result to agent.
+
+In short: headers are for direct x402 compatibility; relayer mode is pay-and-proxy execution.
+
+### 1) Anonymous x402 call (`createShieldedFetch`)
+
+You do not manually construct `PaymentRequirement` in normal usage.  
+The merchant returns it in `402 PAYMENT-REQUIRED`, and `createShieldedFetch` handles the retry.
 
 ```ts
-import { ShieldedClientSDK, buildWitnessFromCommitments } from '@shielded-x402/client';
-import type { Hex, PaymentRequirement, ShieldedNote } from '@shielded-x402/shared-types';
+import {
+  ShieldedClientSDK,
+  LocalNoteIndexer,
+  buildWitnessFromCommitments,
+  createShieldedFetch
+} from '@shielded-x402/client';
 
 const sdk = new ShieldedClientSDK({
-  endpoint: 'https://merchant.example/x402',
-  signer: async (message) => {
-    // wallet signature function
-    return '0x...';
+  endpoint: RELAYER_URL,
+  signer: async (message) => account.signMessage({ message })
+  // proofProvider: optional, if you want real Noir/bb proofs in client-side flow
+});
+
+// agent-local persistence (wallet/db). Keep notes + nullifier secrets here.
+const noteStore = new LocalNoteIndexer();
+const nullifierSecretsByCommitment = new Map<string, `0x${string}`>();
+
+const shieldedFetch = createShieldedFetch({
+  sdk,
+  resolveContext: async () => {
+    const note = noteStore.getNotes().find((n) => n.amount > 0n);
+    if (!note) throw new Error('no spendable shielded note');
+
+    const commitments = noteStore.getCommitments();
+    const witness = buildWitnessFromCommitments(commitments, note.leafIndex);
+    const nullifierSecret = nullifierSecretsByCommitment.get(note.commitment);
+    if (!nullifierSecret) throw new Error('missing nullifier secret for selected note');
+
+    return { note, witness, nullifierSecret };
   }
 });
 
-const note: ShieldedNote = {
-  amount: 2_000_000n,
-  rho: '0x...',
-  pkHash: '0x...',
-  commitment: '0x...',
-  leafIndex: 3
-};
-
-const requirement: PaymentRequirement = {
-  scheme: 'exact',
-  network: 'base-sepolia',
-  asset: '0x...',
-  payTo: '0x...',
-  rail: 'shielded-usdc',
-  amount: '1500000',
-  challengeNonce: '0x...',
-  challengeExpiry: String(Math.floor(Date.now() / 1000) + 300),
-  merchantPubKey: '0x...',
-  verifyingContract: '0x...'
-};
-
-const commitments: Hex[] = ['0x...', '0x...', note.commitment, '0x...'];
-const witness = buildWitnessFromCommitments(commitments, note.leafIndex);
-
-const prepared = await sdk.prepare402Payment(requirement, note, witness, '0x...');
-
-// send protected request with x402 payment signature header
-await fetch('https://merchant.example/protected', {
-  method: 'POST',
-  headers: prepared.headers,
-  body: JSON.stringify({ action: 'purchase' })
-});
-
-console.log(prepared.response.nullifier, prepared.changeNote.commitment);
+// 1) GET -> merchant returns 402
+// 2) SDK auto-builds PAYMENT-SIGNATURE
+// 3) retries request
+// 4) returns protected data on success
+const res = await shieldedFetch('https://api.example.com/paid/data');
+console.log(await res.text());
 ```
 
-In this MVP, sequencer credit in local tests is typically seeded with `adminCredit`.
-Production wiring should connect verified shielded settlement output to sequencer crediting.
+Notes and nullifier secrets are agent-local state (wallet/db), not relayer/sequencer state.
+
+If you need low-level control, you can still call `prepare402Payment(...)` directly.
 
 ### 2) Authorize + relay pay (fast credit path)
 
 ```ts
-import {
-  canonicalIntentBytes,
-  deriveAgentIdFromPubKey,
-  deriveMerchantId,
-  normalizeHex,
-  type AuthorizeRequestV1,
-  type IntentV1
-} from '@shielded-x402/shared-types';
 import { MultiChainCreditClient } from '@shielded-x402/client';
-import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
-
-function spkiEd25519ToHex(spkiDer: Buffer): `0x${string}` {
-  const prefix = Buffer.from('302a300506032b6570032100', 'hex');
-  const raw = spkiDer.subarray(prefix.length);
-  return normalizeHex(`0x${raw.toString('hex')}`);
-}
-
-function signIntent(intent: IntentV1, privateKey: KeyObject): `0x${string}` {
-  const digest = createHash('sha256').update(canonicalIntentBytes(intent)).digest();
-  return normalizeHex(`0x${sign(null, digest, privateKey).toString('hex')}`);
-}
+import { normalizeHex } from '@shielded-x402/shared-types';
+import { createHash, sign, createPrivateKey } from 'node:crypto';
 
 const client = new MultiChainCreditClient({
   sequencerUrl: 'http://127.0.0.1:3200',
@@ -189,48 +177,39 @@ const client = new MultiChainCreditClient({
   sequencerAdminToken: 'change-me'
 });
 
-const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-const agentPubKey = spkiEd25519ToHex(publicKey.export({ format: 'der', type: 'spki' }) as Buffer);
-const agentId = deriveAgentIdFromPubKey(agentPubKey);
-const merchantId = deriveMerchantId({
-  serviceRegistryId: 'demo/base',
-  endpointUrl: 'https://merchant.base.example/pay'
-});
+// from your wallet / local agent state:
+const agentId = '0x<agent-id>';
+const agentPubKey = '0x<agent-pubkey>';
+const agentNonce = '0';
+const agentPrivateKeyPem = process.env.AGENT_ED25519_PRIVATE_KEY_PEM!;
 
-await client.adminCredit({ agentId, amountMicros: '5000000' }); // testnet/admin path
-
-const intent: IntentV1 = {
-  version: 1,
-  agentId,
-  agentPubKey,
-  signatureScheme: 'ed25519-sha256-v1',
-  agentNonce: '0',
+const result = await client.pay({
+  chainRef: 'eip155:8453',
   amountMicros: '1500000',
-  merchantId,
-  requiredChainRef: 'eip155:8453',
-  expiresAt: String(Math.floor(Date.now() / 1000) + 300),
-  requestId: normalizeHex(`0x${randomBytes(32).toString('hex')}`)
-};
-
-const authorizeReq: AuthorizeRequestV1 = {
-  intent,
-  agentSig: signIntent(intent, privateKey)
-};
-
-const { authorization, sequencerSig } = await client.authorize(authorizeReq);
-
-const relayResult = await client.relayPay({
-  authorization,
-  sequencerSig,
+  merchant: {
+    serviceRegistryId: 'demo/base',
+    endpointUrl: 'https://merchant.base.example/pay'
+  },
   merchantRequest: {
     url: 'https://merchant.base.example/pay',
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     bodyBase64: Buffer.from(JSON.stringify({ orderId: 'o-123' })).toString('base64')
+  },
+  agent: {
+    agentId,
+    agentPubKey,
+    signatureScheme: 'ed25519-sha256-v1',
+    agentNonce,
+    signIntent: async ({ canonicalBytes }) => {
+      const digest = createHash('sha256').update(canonicalBytes).digest();
+      const privateKey = createPrivateKey(agentPrivateKeyPem);
+      return normalizeHex(`0x${sign(null, digest, privateKey).toString('hex')}`);
+    }
   }
 });
 
-console.log(relayResult.executionTxHash, relayResult.status);
+console.log(result.relay.executionTxHash, result.relay.status);
 ```
 
 ### 3) Fetch commitment proof and reclaim (if expired)

@@ -2,12 +2,22 @@ import type {
   AuthorizeRequestV1,
   AuthorizeResponseV1,
   CommitmentMetadataV1,
+  IntentV1,
   InclusionProofV1,
   ReclaimRequestV1,
   RelayPayRequestV1,
-  RelayPayResponseV1
+  RelayPayResponseV1,
+  SignatureScheme
 } from '@shielded-x402/shared-types';
-import { RELAYER_ROUTES_V1, SEQUENCER_ROUTES_V1, type Hex } from '@shielded-x402/shared-types';
+import {
+  RELAYER_ROUTES_V1,
+  SEQUENCER_ROUTES_V1,
+  buildIntentTypedDataPayload,
+  canonicalIntentBytes,
+  deriveMerchantId,
+  normalizeHex,
+  type Hex
+} from '@shielded-x402/shared-types';
 import { postJson, requestJson } from './http.js';
 
 export interface MultiChainCreditClientConfig {
@@ -38,8 +48,50 @@ export interface LatestCommitmentResponseV1 {
   postedTxHash?: Hex | null;
 }
 
+export interface UnifiedPayAgentContext {
+  agentId: Hex;
+  agentPubKey: Hex;
+  signatureScheme: SignatureScheme;
+  agentNonce: string;
+  signIntent: (input: {
+    intent: IntentV1;
+    canonicalBytes: Uint8Array;
+    typedData: ReturnType<typeof buildIntentTypedDataPayload>;
+  }) => Promise<Hex> | Hex;
+}
+
+export interface UnifiedPayRequestV1 {
+  chainRef: string;
+  amountMicros: string;
+  merchant: {
+    serviceRegistryId: string;
+    endpointUrl: string;
+  };
+  merchantRequest: RelayPayRequestV1['merchantRequest'];
+  agent: UnifiedPayAgentContext;
+  expiresInSeconds?: number;
+  requestId?: Hex;
+  serviceHash?: Hex;
+  memoHash?: Hex;
+}
+
+export interface UnifiedPayResultV1 {
+  authorize: AuthorizeResponseV1;
+  relay: RelayPayResponseV1;
+}
+
 function trimTrailingSlash(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+function randomHex32(): Hex {
+  if (!globalThis.crypto) {
+    throw new Error('global crypto is required to auto-generate requestId');
+  }
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return normalizeHex(`0x${hex}`);
 }
 
 export class MultiChainCreditClient {
@@ -117,6 +169,52 @@ export class MultiChainCreditClient {
       request,
       { errorPrefix: 'admin credit failed', headers }
     );
+  }
+
+  async pay(request: UnifiedPayRequestV1): Promise<UnifiedPayResultV1> {
+    const expiresInSeconds = request.expiresInSeconds ?? 300;
+    if (!Number.isInteger(expiresInSeconds) || expiresInSeconds <= 0) {
+      throw new Error('expiresInSeconds must be a positive integer');
+    }
+    const expiresAt = String(Math.floor(Date.now() / 1000) + expiresInSeconds);
+    const merchantId = deriveMerchantId({
+      serviceRegistryId: request.merchant.serviceRegistryId,
+      endpointUrl: request.merchant.endpointUrl
+    });
+
+    const intent: IntentV1 = {
+      version: 1,
+      agentId: request.agent.agentId,
+      agentPubKey: request.agent.agentPubKey,
+      signatureScheme: request.agent.signatureScheme,
+      agentNonce: request.agent.agentNonce,
+      amountMicros: request.amountMicros,
+      merchantId,
+      requiredChainRef: request.chainRef,
+      expiresAt,
+      requestId: request.requestId ?? randomHex32(),
+      ...(request.serviceHash ? { serviceHash: request.serviceHash } : {}),
+      ...(request.memoHash ? { memoHash: request.memoHash } : {})
+    };
+
+    const canonicalBytes = canonicalIntentBytes(intent);
+    const typedData = buildIntentTypedDataPayload(intent);
+    const agentSig = normalizeHex(
+      await request.agent.signIntent({
+        intent,
+        canonicalBytes,
+        typedData
+      })
+    );
+
+    const authorize = await this.authorize({ intent, agentSig });
+    const relay = await this.relayPay({
+      authorization: authorize.authorization,
+      sequencerSig: authorize.sequencerSig,
+      merchantRequest: request.merchantRequest
+    });
+
+    return { authorize, relay };
   }
 }
 

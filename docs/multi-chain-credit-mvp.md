@@ -5,6 +5,7 @@
 1. Single sequencer is the real-time source of truth for balances/nonces.
 2. Relayers are chain-bound executors (`eip155:8453`, `solana:devnet` for MVP).
 3. Base commitments are delayed audit checkpoints and do not gate execution.
+4. Credit funding comes from shielded settlement outputs; `POST /v1/admin/credit` is test-only bootstrap.
 
 ## Detailed Flow (Full)
 

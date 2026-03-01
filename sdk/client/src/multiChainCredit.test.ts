@@ -140,4 +140,73 @@ describe('MultiChainCreditClient', () => {
       })
     ).rejects.toThrow('no relayer configured for chainRef solana:devnet');
   });
+
+  it('pay() orchestrates authorize + relayPay with one call', async () => {
+    const authorizeResponse: AuthorizeResponseV1 = {
+      authorization: {
+        version: 1,
+        intentId: '0x11'.padEnd(66, '1') as `0x${string}`,
+        authId: '0x22'.padEnd(66, '2') as `0x${string}`,
+        authorizedAmountMicros: '1500000',
+        agentId: '0x33'.padEnd(66, '3') as `0x${string}`,
+        agentNonce: '5',
+        merchantId: '0x44'.padEnd(66, '4') as `0x${string}`,
+        chainRef: 'solana:devnet',
+        issuedAt: '1',
+        expiresAt: '100000',
+        sequencerEpochHint: '1',
+        logSeqNo: '2',
+        sequencerKeyId: 'seq-key-1'
+      },
+      sequencerSig: '0xaa'.padEnd(130, 'a') as `0x${string}`,
+      idempotent: false
+    };
+
+    const relayResponse: RelayPayResponseV1 = {
+      executionTxHash: '0x55'.padEnd(66, '5') as `0x${string}`,
+      authId: authorizeResponse.authorization.authId,
+      status: 'DONE'
+    };
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, authorizeResponse))
+      .mockResolvedValueOnce(jsonResponse(200, relayResponse));
+
+    const signIntent = vi.fn(async () => ('0xbb'.padEnd(130, 'b') as `0x${string}`));
+    const client = new MultiChainCreditClient({
+      sequencerUrl: 'http://sequencer.local',
+      relayerUrls: {
+        'solana:devnet': 'http://solana-relayer.local'
+      },
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    const result = await client.pay({
+      chainRef: 'solana:devnet',
+      amountMicros: '1500000',
+      merchant: {
+        serviceRegistryId: 'demo/sol',
+        endpointUrl: 'https://merchant.solana.example/pay'
+      },
+      merchantRequest: {
+        url: 'https://merchant.solana.example/pay',
+        method: 'POST'
+      },
+      agent: {
+        agentId: '0x33'.padEnd(66, '3') as `0x${string}`,
+        agentPubKey: '0xcc'.padEnd(66, 'c') as `0x${string}`,
+        signatureScheme: 'ed25519-sha256-v1',
+        agentNonce: '5',
+        signIntent
+      }
+    });
+
+    expect(signIntent).toHaveBeenCalledTimes(1);
+    expect(result.authorize.authorization.chainRef).toBe('solana:devnet');
+    expect(result.relay.status).toBe('DONE');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('http://sequencer.local/v1/credit/authorize');
+    expect(String(fetchMock.mock.calls[1][0])).toBe('http://solana-relayer.local/v1/relay/pay');
+  });
 });
