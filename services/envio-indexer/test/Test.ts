@@ -1,8 +1,7 @@
 import assert from "assert";
-import { 
-  TestHelpers,
-  ShieldedPool_Deposited
-} from "generated";
+import generated from "generated";
+import type { ShieldedPool_Deposited } from "generated";
+const { TestHelpers } = generated as typeof import("generated");
 const { MockDb, ShieldedPool } = TestHelpers;
 
 describe("ShieldedPool contract Deposited event tests", () => {

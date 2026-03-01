@@ -1,0 +1,11 @@
+
+> shielded-x402@0.1.0 sequencer:dev /Users/nhestrompia/Projects/shielded-402
+> pnpm --filter @shielded-x402/credit-sequencer dev
+
+
+> @shielded-x402/credit-sequencer@0.1.0 dev /Users/nhestrompia/Projects/shielded-402/services/credit-sequencer
+> tsx src/server.ts
+
+Can't determine timestamp for 001
+No migrations to run!
+[credit-sequencer] listening on 3200

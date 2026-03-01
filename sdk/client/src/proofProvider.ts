@@ -8,8 +8,7 @@ const MERKLE_DEPTH = CRYPTO_SPEC.merkleTreeDepth;
 // UltraHonk backend can return expanded public inputs as 5 bytes32 words (32 bytes each) + amount byte.
 const EXPANDED_PUBLIC_INPUT_LENGTH = 161;
 const EXPANDED_PUBLIC_INPUT_AMOUNT_INDEX = 160;
-// Runtime dynamic import keeps this module compatible across Node ESM/CJS calling environments.
-const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<any>;
+const dynamicImport = (moduleName: string): Promise<any> => import(moduleName);
 
 const hexToBytes32 = (value: Hex): number[] => {
   const hex = value.slice(2).padStart(64, '0');
@@ -30,7 +29,11 @@ const fieldHexToDecimal = (value: Hex, label: string): string => {
 
 const normalizePublicInputWord = (value: unknown): Hex => {
   if (typeof value === 'string') {
-    return toHexWord(BigInt(normalizeHex(value)));
+    const trimmed = value.trim();
+    if (/^[0-9]+$/.test(trimmed)) {
+      return toHexWord(BigInt(trimmed));
+    }
+    return toHexWord(BigInt(normalizeHex(trimmed)));
   }
   if (typeof value === 'bigint') {
     return toHexWord(value);

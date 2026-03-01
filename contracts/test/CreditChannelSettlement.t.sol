@@ -26,6 +26,8 @@ contract CreditChannelSettlementTest {
 
     bytes32 internal constant CHANNEL_ID =
         0x9c6f6f7d72f060f06f6813fe0959136f4e5f451f7fb9f95d0b1fb89bad2b2a3b;
+    uint256 internal constant SECP256K1_N =
+        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -154,6 +156,36 @@ contract CreditChannelSettlementTest {
         require(reverted, "expected unauthorized close start revert");
     }
 
+    function testRejectsHighSMalleableSignature() public {
+        setUp();
+
+        vm.prank(relayer);
+        settlement.openOrTopup(CHANNEL_ID, agent, 100_000_000);
+
+        CreditChannelSettlement.CreditState memory state = CreditChannelSettlement.CreditState({
+            channelId: CHANNEL_ID,
+            seq: 1,
+            available: 90_000_000,
+            cumulativeSpent: 10_000_000,
+            lastDebitDigest: keccak256("d1"),
+            updatedAt: uint64(block.timestamp),
+            agentAddress: agent,
+            relayerAddress: relayer
+        });
+
+        CreditChannelSettlement.SignedCreditState memory signedState = _signState(state);
+        signedState.agentSignature = _toHighS(signedState.agentSignature);
+
+        bool reverted;
+        vm.prank(relayer);
+        try settlement.startClose(signedState) {
+            reverted = false;
+        } catch {
+            reverted = true;
+        }
+        require(reverted, "expected high-s signature rejection");
+    }
+
     function _signState(CreditChannelSettlement.CreditState memory state)
         internal
         returns (CreditChannelSettlement.SignedCreditState memory signed)
@@ -175,5 +207,20 @@ contract CreditChannelSettlementTest {
             mstore(add(out, 64), s)
             mstore8(add(out, 96), v)
         }
+    }
+
+    function _toHighS(bytes memory signature) internal pure returns (bytes memory out) {
+        require(signature.length == 65, "bad sig length");
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+        uint256 highS = SECP256K1_N - uint256(s);
+        uint8 toggledV = (v == 27) ? 28 : 27;
+        out = _toSignature(toggledV, r, bytes32(highS));
     }
 }

@@ -80,9 +80,8 @@ Then in app code:
 
 ```ts
 import {
+  MultiChainCreditClient,
   ShieldedClientSDK,
-  createCreditChannelClient,
-  createCreditShieldedFetch,
-  createProofProvider
+  createProofProvider,
 } from '@shielded-x402/client';
 ```

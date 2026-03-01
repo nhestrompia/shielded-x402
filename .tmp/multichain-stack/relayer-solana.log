@@ -1,0 +1,9 @@
+
+> shielded-x402@0.1.0 relayer:dev /Users/nhestrompia/Projects/shielded-402
+> pnpm --filter @shielded-x402/payment-relayer dev
+
+
+> @shielded-x402/payment-relayer@0.1.0 dev /Users/nhestrompia/Projects/shielded-402/services/payment-relayer
+> tsx src/server.ts
+
+[payment-relayer] listening on 3101 chainRef=solana:devnet

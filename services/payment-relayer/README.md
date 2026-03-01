@@ -1,12 +1,15 @@
-# Payment Relayer
+# Payment Relayer (MVP)
 
-Runs the credit-channel relay flow:
+Chain-bound relayer for the breaking multi-chain credit MVP.
 
-1. accept proof-backed credit topups
-2. verify co-signed credit states and debit intents
-3. execute merchant payout adapter on each debit
-4. return the next relayer-signed state
-5. optionally settle close/challenge/finalize onchain
+This runtime only supports:
+
+1. `POST /v1/relay/pay` with a valid sequencer authorization
+2. chainRef enforcement per relayer instance
+3. execution report callback to the sequencer
+4. relayer-signed execution reports (`relayerKeyId` + `reportSig`)
+
+Legacy `/v1/relay/credit/*` routes are removed.
 
 ## Run
 
@@ -17,44 +20,59 @@ pnpm relayer:dev
 ## Env
 
 - `RELAYER_PORT` (default `3100`)
-- `RELAYER_RPC_URL` (or `SEPOLIA_RPC_URL`)
-- `SHIELDED_POOL_ADDRESS`
-- `RELAYER_VERIFYING_CONTRACT` (preferred) or `PAYMENT_VERIFYING_CONTRACT` or `ULTRA_VERIFIER_ADDRESS`
-- `RELAYER_PRIVATE_KEY` (or `PAYMENT_RELAYER_PRIVATE_KEY`)
-- `RELAYER_UNSAFE_DEV_MODE` (default `false`; keep `false` in production)
-- `RELAYER_PAYOUT_MODE=forward|noop|x402`
-- `RELAYER_PAYOUT_HEADERS_JSON` (JSON map, used by `forward` mode)
-- `RELAYER_SHIELDED_VERIFYING_CONTRACT` (fallback verifying contract; defaults to `SHIELDED_POOL_ADDRESS`)
-- `RELAYER_X402_RPC_URL` (required for `x402` mode; or use `BASE_SEPOLIA_RPC_URL`)
-- `RELAYER_X402_PRIVATE_KEY` (required for `x402` mode; fallback to `RELAYER_PRIVATE_KEY`)
-- `RELAYER_X402_CHAIN=base-sepolia|sepolia` (default `base-sepolia`)
-- `RELAYER_CHAIN_ID` (required by credit EIP-712 domain; must match relayer chain)
-- `RELAYER_CREDIT_HEAD_STORE_PATH` (default `/tmp/shielded-x402-credit-heads.json`; persisted channel heads for restart safety)
-- `CREDIT_SETTLEMENT_CONTRACT` (optional, enables Phase 2 onchain close/challenge/finalize)
-- `CREDIT_SETTLEMENT_RPC_URL` (optional, defaults to `RELAYER_RPC_URL`)
+- `RELAYER_CHAIN_REF` (required, CAIP-2; e.g. `eip155:84532` or `solana:devnet`)
+- `RELAYER_SEQUENCER_URL` (required, sequencer base URL)
+- `RELAYER_SEQUENCER_KEYS_JSON` (required JSON map: `{ "sequencer_key_id": "0x<ed25519-pubkey-32-bytes>" }`)
+- `RELAYER_REPORTING_PRIVATE_KEY` (required; 32-byte seed or 64-byte key hex)
+- `RELAYER_KEY_ID` (required logical key identifier sent to sequencer)
+- `RELAYER_PAYOUT_MODE=forward|noop|solana|evm` (default `forward`)
+- `RELAYER_PAYOUT_HEADERS_JSON` (optional JSON object of static outbound headers)
+- `RELAYER_ALLOWED_HOSTS` (optional comma-separated allowlist for forward mode)
+- `RELAYER_MERCHANT_TIMEOUT_MS` (default `5000`)
+- `RELAYER_MAX_RESPONSE_BYTES` (default `1048576`)
+- `RELAYER_RATE_LIMIT_PER_MINUTE` (default `180`)
+- `RELAYER_CALLER_AUTH_TOKEN` (optional; when set, `/v1/relay/pay` requires `x-relayer-auth-token`)
+- `RELAYER_EVM_PRIVATE_KEY` (optional fallback key for `evm` mode)
 
-`x402` payout mode uses `x402-fetch` internally so relayer can pay upstream standard x402 endpoints after shielded settlement.
+For `RELAYER_PAYOUT_MODE=solana`, `merchantRequest.bodyBase64` must contain JSON payload fields accepted by `chains/solana/client/adapter.ts`:
 
-Verifier address note:
-- For this relayer verification path, point the verifier env var to the `NoirVerifierAdapter` contract (the compact public-input verifier interface), not the raw generated Ultra/Honk verifier unless you also provide expanded 161 public inputs.
+- `rpcUrl`
+- `wsUrl`
+- `gatewayProgramId`
+- `verifierProgramId`
+- `stateAccount` (gateway state PDA)
+- `recipient`
+- `amountLamports`
+- `authIdHex`
+- `authExpiryUnix`
+- `proofBase64`
+- `publicWitnessBase64`
+- `payerKeypairPath`
 
-Safety note:
-- With `RELAYER_UNSAFE_DEV_MODE=false` (default), relayer startup fails if onchain verifier/settlement config is missing.
-- Set `RELAYER_UNSAFE_DEV_MODE=true` only for local insecure testing.
+For `RELAYER_PAYOUT_MODE=evm`, `merchantRequest.bodyBase64` must contain:
+
+- `rpcUrl`
+- `recipient` (EVM address)
+- `amountWei`
+- `chainId` (optional)
+- `privateKey` (optional if `RELAYER_EVM_PRIVATE_KEY` is set on relayer)
+
+## Typical modes
+
+1. Base local smoke:
+   - `RELAYER_CHAIN_REF=eip155:8453`
+   - `RELAYER_PAYOUT_MODE=noop`
+2. Base onchain:
+   - `RELAYER_CHAIN_REF=eip155:84532`
+   - `RELAYER_PAYOUT_MODE=evm`
+   - `RELAYER_EVM_PRIVATE_KEY=0x...`
+3. Solana onchain:
+   - `RELAYER_CHAIN_REF=solana:devnet`
+   - `RELAYER_PAYOUT_MODE=solana`
 
 ## Endpoints
 
 - `GET /health`
-- `POST /v1/relay/credit/domain`
-- `POST /v1/relay/credit/topup`
-- `POST /v1/relay/credit/pay`
-- `POST /v1/relay/credit/close/start`
-- `POST /v1/relay/credit/close/challenge`
-- `POST /v1/relay/credit/close/finalize`
-- `GET /v1/relay/credit/close/:channelId`
-
-## Credit Deployment Notes
-
-- Credit channels are strictly sequential (`nextSeq = currentSeq + 1`) per `channelId`.
-- The relayer lock is process-local; deploy as a single relayer instance unless you add a distributed lock.
-- Persist `RELAYER_CREDIT_HEAD_STORE_PATH` on durable storage so stale client states are rejected after restart.
+- `GET /health/ready`
+- `GET /metrics`
+- `POST /v1/relay/pay`

@@ -9,7 +9,7 @@
     "codegen": "envio codegen",
     "dev": "envio dev",
     "start": "envio start",
-    "test": "pnpm mocha"
+    "test": "node scripts/run-tests.mjs"
   },
   "devDependencies": {
     "@types/chai": "^4.3.11",

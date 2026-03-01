@@ -5,8 +5,7 @@
   "type": "module",
   "description": "ERC-8004 discovery + shielded relayed A2A payment example",
   "scripts": {
-    "start": "node test-agent-payment.mjs",
-    "seed-note": "node seed-note.mjs",
+    "start": "node find-payable-agent.mjs",
     "find-payable": "node find-payable-agent.mjs"
   },
   "dependencies": {

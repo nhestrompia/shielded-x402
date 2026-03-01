@@ -13,8 +13,5 @@ export function normalizeHex(value: string): Hex {
   if (trimmed.startsWith('0x')) {
     return (trimmed as Hex);
   }
-  if (/^[0-9]+$/.test(trimmed)) {
-    return (`0x${BigInt(trimmed).toString(16)}` as Hex);
-  }
   return (`0x${trimmed}` as Hex);
 }
