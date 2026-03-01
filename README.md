@@ -8,48 +8,42 @@ Breaking multi-chain credit MVP with:
 
 No backward compatibility is retained for legacy `/v1/relay/credit/*` flows.
 
-## End-to-End Flow (Full Picture)
+## Flow Overview
 
 ```mermaid
-flowchart TB
-  subgraph PrivacyRail["Privacy Rail (Anonymous Payment Construction)"]
-    Agent["Agent App / Wallet"] --> ShieldSDK["ShieldedClientSDK"]
-    ShieldSDK -->|"Build spend proof + nullifier + commitments"| ZKPayload["ShieldedPaymentResponse"]
-    ZKPayload --> MerchantGW["Merchant Gateway / Relayer Verify Path"]
-    MerchantGW --> ShieldedSettle["Shielded Settlement (onchain)"]
-    ShieldedSettle --> FundingSignal["Funding Signal / Crediting Input"]
+sequenceDiagram
+  participant A as Agent SDK
+  participant M as Merchant API
+  participant R as Payment Relayer
+  participant Q as Sequencer
+  participant P as ShieldedPool (optional)
+
+  A->>M: Request protected resource
+  M-->>A: 402 PAYMENT-REQUIRED
+
+  opt One-time funding / topup
+    A->>R: Topup request
+    R->>P: Settle funding onchain
+    R->>Q: Credit agent balance
+    Q-->>A: Credit available (nonce/balance state)
   end
 
-  subgraph CreditRail["Credit Rail (Fast Multi-Chain Execution)"]
-    Agent --> CreditSDK["MultiChainCreditClient"]
-    FundingSignal --> SeqAPI["Sequencer API"]
-    CreditSDK -->|"IntentV1 + agentSig"| SeqAPI
-    SeqAPI --> SeqCore["Authorization + Invariant Checks"]
-    SeqCore --> Ledger["Postgres Ledger<br/>agents / authorizations / idempotency / executions"]
-    SeqCore -->|"AuthorizationV1 + sequencerSig"| AuthOut["Signed Authorization"]
+  loop For each paid x402 call
+    A->>Q: POST /v1/credit/authorize (IntentV1 + agentSig)
+    Q-->>A: AuthorizationV1 + sequencerSig
+    A->>R: POST /v1/relay/pay (authorization + merchant request)
+    R->>M: Execute payout adapter call
+    M-->>R: Merchant response
+    R->>Q: POST /v1/credit/executions (signed report)
+    R-->>A: Merchant response + next credit state
+    A->>M: Retry protected request (with payment result)
+    M-->>A: Protected resource data
   end
 
-  subgraph MultiRelayerExecution["Multi-Relayer Execution"]
-    AuthOut --> BaseRelayer["Base Relayer"]
-    AuthOut --> SolRelayer["Solana Relayer"]
-    BaseRelayer -->|"evm mode"| BaseTx["Native Base Tx Hash"]
-    BaseRelayer -->|"noop mode"| BaseNoop["Deterministic Synthetic Hash"]
-    SolRelayer --> Gateway["x402_gateway Program"]
-    Gateway -->|"CPI verify"| Verifier["Sunspot Groth16 Verifier"]
-    Gateway -->|"SOL transfer"| SolTx["Solana Devnet Tx Signature"]
-    BaseTx --> ExecReport["ExecutionReportV1"]
-    BaseNoop --> ExecReport
-    SolTx --> ExecReport
-    ExecReport --> SeqAPI
-  end
-
-  subgraph AuditPath["Audit / Verifiability"]
-    SeqCore --> Leaves["auth leaves + merkle root"]
-    Leaves -->|"hourly post"| Registry["CommitmentRegistryV1 (Base)"]
-    CreditSDK -->|"GET /v1/commitments/proof?authId=..."| SeqAPI
-    SeqAPI --> Proof["InclusionProofV1"]
-  end
+  Note over Q: Hourly Base commitments are posted for delayed auditability
 ```
+
+Detailed architecture diagram: [docs/multi-chain-credit-mvp.md](/Users/nhestrompia/Projects/shielded-402/docs/multi-chain-credit-mvp.md)
 
 ### Funding modes
 

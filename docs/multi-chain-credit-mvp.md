@@ -6,6 +6,49 @@
 2. Relayers are chain-bound executors (`eip155:8453`, `solana:devnet` for MVP).
 3. Base commitments are delayed audit checkpoints and do not gate execution.
 
+## Detailed Flow (Full)
+
+```mermaid
+flowchart TB
+  subgraph PrivacyRail["Privacy Rail (Anonymous Payment Construction)"]
+    Agent["Agent App / Wallet"] --> ShieldSDK["ShieldedClientSDK"]
+    ShieldSDK -->|"Build spend proof + nullifier + commitments"| ZKPayload["ShieldedPaymentResponse"]
+    ZKPayload --> MerchantGW["Merchant Gateway / Relayer Verify Path"]
+    MerchantGW --> ShieldedSettle["Shielded Settlement (onchain)"]
+    ShieldedSettle --> FundingSignal["Funding Signal / Crediting Input"]
+  end
+
+  subgraph CreditRail["Credit Rail (Fast Multi-Chain Execution)"]
+    Agent --> CreditSDK["MultiChainCreditClient"]
+    FundingSignal --> SeqAPI["Sequencer API"]
+    CreditSDK -->|"IntentV1 + agentSig"| SeqAPI
+    SeqAPI --> SeqCore["Authorization + Invariant Checks"]
+    SeqCore --> Ledger["Postgres Ledger<br/>agents / authorizations / idempotency / executions"]
+    SeqCore -->|"AuthorizationV1 + sequencerSig"| AuthOut["Signed Authorization"]
+  end
+
+  subgraph MultiRelayerExecution["Multi-Relayer Execution"]
+    AuthOut --> BaseRelayer["Base Relayer"]
+    AuthOut --> SolRelayer["Solana Relayer"]
+    BaseRelayer -->|"evm mode"| BaseTx["Native Base Tx Hash"]
+    BaseRelayer -->|"noop mode"| BaseNoop["Deterministic Synthetic Hash"]
+    SolRelayer --> Gateway["x402_gateway Program"]
+    Gateway -->|"CPI verify"| Verifier["Sunspot Groth16 Verifier"]
+    Gateway -->|"SOL transfer"| SolTx["Solana Devnet Tx Signature"]
+    BaseTx --> ExecReport["ExecutionReportV1"]
+    BaseNoop --> ExecReport
+    SolTx --> ExecReport
+    ExecReport --> SeqAPI
+  end
+
+  subgraph AuditPath["Audit / Verifiability"]
+    SeqCore --> Leaves["auth leaves + merkle root"]
+    Leaves -->|"hourly post"| Registry["CommitmentRegistryV1 (Base)"]
+    CreditSDK -->|"GET /v1/commitments/proof?authId=..."| SeqAPI
+    SeqAPI --> Proof["InclusionProofV1"]
+  end
+```
+
 ## Frozen Domain Tags
 
 1. `x402:intent:v1`
